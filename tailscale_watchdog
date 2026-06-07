@@ -1,0 +1,284 @@
+#!/bin/sh
+#
+# PROVIDE: tailscale_watchdog
+# REQUIRE: NETWORKING tailscaled pfsense_tailscaled
+# KEYWORD: shutdown
+#
+# Add the following to /etc/rc.conf.local to enable:
+#   tailscale_watchdog_enable="YES"
+#
+# Optional rc.conf.local settings and their defaults:
+#   tailscale_watchdog_command="/usr/local/sbin/tailscale_watchdogd"
+#   tailscale_watchdog_flags="-f /usr/local/etc/tailscale_watchdog.conf"
+#   tailscale_watchdog_pidfile="/var/run/tailscale_watchdog.pid"
+#
+# Note: tailscale_watchdog_flags is word-split by the shell when passed to
+# the daemon.  Arguments whose values contain spaces are not supported.
+# For normal usage (a -f flag and a plain config path) this is not a
+# limitation in practice.
+#
+# Note: Do not include -d (debug mode) in tailscale_watchdog_flags.  Debug
+# output is intended for foreground test runs only.  When run as a service,
+# the daemon's output is captured to a temp file during startup and then
+# discarded.  Running with -d would cause continuous debug output to be
+# written to a deleted-but-open file descriptor, consuming disk space
+# invisibly until the daemon exits.  For debug/test use, run the daemon
+# directly:
+#   /usr/local/sbin/tailscale_watchdogd -t -1 -d
+#   /usr/local/sbin/tailscale_watchdogd -t -d
+#
+# Note: REQUIRE: tailscaled assumes tailscaled is managed as an rc service
+# on this pfSense installation with a matching PROVIDE token.  Verify before
+# deploying:
+#   grep -R "^# PROVIDE:" /etc/rc.d /usr/local/etc/rc.d | grep -i tailscale
+# If pfsense_tailscaled also has a PROVIDE token, add it to REQUIRE as well.
+# If neither is rc.d-managed, remove them from the REQUIRE line to avoid
+# boot-time dependency warnings.
+
+. /etc/rc.subr
+
+name="tailscale_watchdog"
+rcvar="tailscale_watchdog_enable"
+
+load_rc_config "$name"
+
+: ${tailscale_watchdog_enable:="NO"}
+: ${tailscale_watchdog_command:="/usr/local/sbin/tailscale_watchdogd"}
+: ${tailscale_watchdog_flags:="-f /usr/local/etc/tailscale_watchdog.conf"}
+: ${tailscale_watchdog_pidfile:="/var/run/tailscale_watchdog.pid"}
+
+# Use the conventional rc.subr pidfile variable name; the custom
+# start/stop/status functions below read this value.
+pidfile="${tailscale_watchdog_pidfile}"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+restart_cmd="${name}_restart"
+status_cmd="${name}_status"
+
+# valid_pid VALUE
+#
+# Returns 0 if VALUE is a plausible process ID: a positive integer greater
+# than 1.  Returns 1 otherwise.
+#
+# This guard is applied to every PID read from the pidfile before it is
+# passed to kill(1).  Without it, a corrupt or maliciously crafted pidfile
+# could cause kill to receive a negative value or zero, which on some
+# implementations sends a signal to a process group or all processes
+# visible to the caller.  Since this script runs as root, that risk is not
+# acceptable.
+#
+# PID 0 and PID 1 are refused because this daemon should never occupy either
+# slot, and sending signals to them would be destructive.
+#
+# $! (set by the shell after backgrounding a process) is always a valid
+# positive integer and does not need this check.  Only values read from
+# disk require validation.
+valid_pid() {
+  case "$1" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+  esac
+  [ "$1" -gt 1 ] 2>/dev/null
+}
+
+# kill_and_wait PID DESCRIPTION
+#
+# Sends SIGTERM to PID and waits up to 5 seconds for it to exit.  If it
+# does not exit gracefully, sends SIGKILL and waits up to 5 more seconds.
+# Prints a warning and returns 1 if the process survives SIGKILL.
+# Returns 0 if the process exits by any means.
+#
+# Used in tailscale_watchdog_start to clean up a daemon that was started
+# but cannot be tracked due to a pidfile write failure.  The same escalation
+# logic used in tailscale_watchdog_stop is applied here for consistency.
+kill_and_wait() {
+  _kw_pid="$1"
+  _kw_desc="$2"
+
+  kill "$_kw_pid" 2>/dev/null
+
+  _kw_i=0
+  while kill -0 "$_kw_pid" 2>/dev/null; do
+    if [ "$_kw_i" -ge 5 ]; then
+      echo "${_kw_desc}: process ${_kw_pid} did not stop after SIGTERM; sending SIGKILL" >&2
+      kill -KILL "$_kw_pid" 2>/dev/null
+
+      _kw_j=0
+      while kill -0 "$_kw_pid" 2>/dev/null; do
+        if [ "$_kw_j" -ge 5 ]; then
+          echo "${_kw_desc}: process ${_kw_pid} survived SIGKILL; manual cleanup required" >&2
+          return 1
+        fi
+        _kw_j=$((_kw_j + 1))
+        sleep 1
+      done
+
+      return 0
+    fi
+    _kw_i=$((_kw_i + 1))
+    sleep 1
+  done
+
+  return 0
+}
+
+tailscale_watchdog_start() {
+  if [ -f "$pidfile" ]; then
+    pid="$(cat "$pidfile" 2>/dev/null)"
+    if valid_pid "$pid" && kill -0 "$pid" 2>/dev/null; then
+      echo "${name} already running as pid ${pid}"
+      return 0
+    fi
+    # Pidfile exists but contains an invalid or stale PID.  Remove it and
+    # proceed with starting rather than treating this as a hard error.
+    rm -f "$pidfile"
+  fi
+
+  echo "Starting ${name}."
+
+  # Use mktemp with an explicit path template to create a temp file with an
+  # unpredictable name.  This avoids the symlink/clobber race that would exist
+  # with a predictable path like /tmp/${name}.start.$$.  The full template
+  # form is used rather than mktemp -t because -t has inconsistent semantics
+  # across implementations; the explicit template is unambiguous.
+  #
+  # Daemon output is captured here during startup so that early failure
+  # diagnostics (config errors, missing files, permission problems) can be
+  # shown to the operator if the process exits immediately.  The daemon logs
+  # normal operational messages via logger(1) and produces no stdout output
+  # during healthy operation, so this file will be empty and removed on a
+  # successful start.
+  start_log="$(mktemp "/tmp/${name}.start.XXXXXX")" || {
+    echo "${name} failed to create startup log temp file" >&2
+    return 1
+  }
+
+  ${tailscale_watchdog_command} ${tailscale_watchdog_flags} \
+    >"$start_log" 2>&1 &
+  daemon_pid=$!
+
+  # $! is shell-assigned and always a valid positive integer; no valid_pid
+  # check is needed here.  Only values read from disk require validation.
+  if ! echo "$daemon_pid" > "$pidfile"; then
+    echo "${name} failed to write pidfile ${pidfile}" >&2
+    # The daemon is running but cannot be tracked.  Kill it cleanly using
+    # the same SIGTERM-then-SIGKILL escalation used in tailscale_watchdog_stop
+    # so we do not leave an untracked process behind.
+    kill_and_wait "$daemon_pid" "$name"
+    rm -f "$start_log"
+    return 1
+  fi
+
+  # Give the daemon a moment to fail on startup errors, then verify it is
+  # still alive.  A one-second wait catches the most common early failures
+  # (missing binary, bad config, permission denied on state directory)
+  # without meaningfully delaying a successful start.
+  sleep 1
+  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+    echo "${name} failed to start" >&2
+    if [ -s "$start_log" ]; then
+      echo "Startup output:" >&2
+      cat "$start_log" >&2
+    else
+      echo "No startup output captured; check system logs." >&2
+    fi
+    rm -f "$pidfile" "$start_log"
+    return 1
+  fi
+
+  rm -f "$start_log"
+  return 0
+}
+
+tailscale_watchdog_stop() {
+  if [ ! -f "$pidfile" ]; then
+    echo "${name} is not running"
+    return 0
+  fi
+
+  pid="$(cat "$pidfile" 2>/dev/null)"
+
+  if ! valid_pid "$pid"; then
+    # No valid process to stop; the postcondition (service not running) is
+    # already satisfied.  Remove the corrupt pidfile and return success so
+    # that restart can proceed to start without operator intervention.
+    echo "${name} pidfile contains invalid pid '${pid}'; removing ${pidfile}" >&2
+    rm -f "$pidfile"
+    return 0
+  fi
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "${name} is not running; removing stale pidfile"
+    rm -f "$pidfile"
+    return 0
+  fi
+
+  echo "Stopping ${name}."
+  kill "$pid" 2>/dev/null
+
+  # Wait up to 10 seconds for graceful shutdown before escalating to SIGKILL.
+  # i is incremented at the top of each iteration so that the first kill -0
+  # check happens immediately (before any sleep), and SIGKILL is sent after
+  # 10 one-second sleeps have elapsed.
+  i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$i" -ge 10 ]; then
+      echo "${name} did not stop cleanly after 10s; sending SIGKILL"
+      kill -KILL "$pid" 2>/dev/null
+
+      # Wait up to 5 more seconds for SIGKILL to take effect.  SIGKILL
+      # delivery is not instantaneous on a loaded system.  If the process
+      # survives all retries, leave the pidfile in place so a subsequent
+      # start does not launch a second instance against a still-running
+      # daemon, and return failure so the operator knows manual cleanup
+      # is required.
+      j=0
+      while kill -0 "$pid" 2>/dev/null; do
+        if [ "$j" -ge 5 ]; then
+          echo "${name}: process ${pid} did not die after SIGKILL; manual cleanup required" >&2
+          return 1
+        fi
+        j=$((j + 1))
+        sleep 1
+      done
+
+      break
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+
+  rm -f "$pidfile"
+  return 0
+}
+
+tailscale_watchdog_restart() {
+  tailscale_watchdog_stop || return 1
+  tailscale_watchdog_start || return 1
+}
+
+tailscale_watchdog_status() {
+  if [ ! -f "$pidfile" ]; then
+    echo "${name} is not running"
+    return 1
+  fi
+
+  pid="$(cat "$pidfile" 2>/dev/null)"
+
+  if ! valid_pid "$pid"; then
+    echo "${name} pidfile contains invalid pid '${pid}'" >&2
+    return 1
+  fi
+
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "${name} is running as pid ${pid}"
+    return 0
+  fi
+
+  echo "${name} is not running, but pidfile exists"
+  return 1
+}
+
+run_rc_command "$1"
