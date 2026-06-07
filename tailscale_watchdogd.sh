@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# tailscale_watchdogd
+# /usr/local/sbin/tailscale_watchdogd.sh
 #
 # Foreground daemon that checks selected Tailscale peers once per interval.
 # If a peer is relayed for FAIL_THRESHOLD consecutive checks, restart
@@ -40,7 +40,7 @@ TAG="tailscale_watchdog"
 CONFIG_FILE="/usr/local/etc/tailscale_watchdog.conf"
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
-PEERS="router router2"
+PEERS="router1 router2"
 CHECK_INTERVAL=60
 FAIL_THRESHOLD=5
 PING_COUNT=5
