@@ -10,8 +10,8 @@
 
 # ---- Pushover notification settings ----------------------------------------
 
-PUSHOVER_TOKEN="your_pushover_application_token"
-PUSHOVER_USER="your_pushover_user_key"
+PUSHOVER_TOKEN="" # Add your_pushover_application_token here to enable notifications.
+PUSHOVER_USER=""  # Add your_pushover_user_key here to enable notifications.
 
 # ---- Tailscale peers to monitor --------------------------------------------
 #
