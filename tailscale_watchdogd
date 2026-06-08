@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# /usr/local/sbin/tailscale_watchdogd.sh
+# tailscale_watchdogd
 #
 # Foreground daemon that checks selected Tailscale peers once per interval.
 # If a peer is relayed for FAIL_THRESHOLD consecutive checks, restart
@@ -14,17 +14,18 @@
 # Options:
 #   -t    Test mode: never restart services.
 #   -1    One-shot mode: run one check cycle and exit.
-#   -d    Debug mode: print classifications and tailscale ping output to stdout.
+#   -d    Debug mode: print classifications and tailscale ping output to stderr.
 #   -f    Config file path. Default: /usr/local/etc/tailscale_watchdog.conf.
 #   -i    Check interval in seconds. Overrides config/default.
 #   -n    Consecutive relayed checks required before restart. Overrides config/default.
 #   -c    tailscale ping count. Overrides config/default.
 #
 # Security notes:
-#   - The config file must be owned by root and not group- or world-writable.
-#     Permissions are verified with stat(1) before sourcing.
+#   - The config file must be owned by root and not readable, writable, or
+#     executable by group or world (mode 0600 recommended).  Permissions are
+#     verified with stat(1) before sourcing.
 #   - Pushover credentials are passed as curl --form-string arguments, which
-#     means they are briefly visible in the process table. On pfSense, process
+#     means they are briefly visible in the process table.  On pfSense, process
 #     table access is restricted to root, so the practical risk is low.
 #   - Peer names are validated to contain only hostname-safe characters before
 #     being passed to tailscale ping, and checked for post-sanitization
@@ -40,14 +41,34 @@ TAG="tailscale_watchdog"
 CONFIG_FILE="/usr/local/etc/tailscale_watchdog.conf"
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
-PEERS="router1 router2"
+PEERS="router router2"
 CHECK_INTERVAL=60
 FAIL_THRESHOLD=5
 PING_COUNT=5
-RESTART_COOLDOWN=900
+# Minimum and maximum seconds after a restart attempt before another restart
+# is allowed.  After each restart attempt a random value in this range is
+# chosen as the cooldown for that router.  Using a range rather than a fixed
+# value prevents multiple routers that monitor one another from settling into
+# synchronized restart cycles: each picks its own next-allowed time
+# independently, so they naturally spread apart even if they restart together.
+#
+# Example with three routers and RESTART_COOLDOWN_MIN=900 / MAX=2700:
+#   router1 restarts -> next restart allowed in 1248 seconds
+#   router2 restarts -> next restart allowed in 2341 seconds
+#   router3 restarts -> next restart allowed in 987 seconds
+#
+# Set MIN and MAX to the same value to get a fixed cooldown.
+RESTART_COOLDOWN_MIN=900
+RESTART_COOLDOWN_MAX=2700
 RESTART_SERVICES="tailscaled pfsense_tailscaled"
 STATE_DIR="/var/run/tailscale_watchdog"
-LAST_RESTART_FILE="${STATE_DIR}/last_restart_attempt"
+# The state file stores the epoch timestamp at which the next restart attempt
+# is allowed.  It is written after every restart attempt (success or failure)
+# with a randomly chosen value between now+MIN and now+MAX.  Storing the
+# next-allowed time rather than the last-attempt time means cooldown_remaining
+# does not need to recompute elapsed time or remember which random cooldown
+# was chosen.
+NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 CURL_TIMEOUT=10
 
 # ---- Runtime flags ---------------------------------------------------------
@@ -67,7 +88,7 @@ Usage: $0 [-t] [-1] [-d] [-f config_file] [-i seconds] [-n threshold] [-c ping_c
 Options:
   -t    Test mode: never restart services.
   -1    One-shot mode: run one check cycle and exit.
-  -d    Debug mode: print classifications and tailscale ping output to stdout.
+  -d    Debug mode: print classifications and tailscale ping output to stderr.
   -f    Config file path. Default: ${CONFIG_FILE}.
   -i    Check interval in seconds. Default: ${CHECK_INTERVAL}.
   -n    Consecutive relayed checks required before restart. Default: ${FAIL_THRESHOLD}.
@@ -84,16 +105,22 @@ is_positive_int() {
   [ "$1" -gt 0 ] 2>/dev/null
 }
 
+# log_msg and debug_msg write exclusively to stderr (via logger and/or the
+# debug printf).  They must never write to stdout because both functions are
+# called from within command substitutions (e.g. cooldown_remaining,
+# next_restart_epoch).  Any stdout output from those contexts would be
+# captured into the calling variable rather than reaching the terminal,
+# corrupting the return value.
 log_msg() {
   logger -t "$TAG" "$*"
   if [ "$DEBUG" -eq 1 ]; then
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
   fi
 }
 
 debug_msg() {
   if [ "$DEBUG" -eq 1 ]; then
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
   fi
 }
 
@@ -101,8 +128,9 @@ debug_msg() {
 #
 # Verifies that FILE is:
 #   - a regular file
+#   - readable by the current process
 #   - owned by root
-#   - not group-writable or world-writable
+#   - has no group or world permissions set (mode 0600 or stricter)
 #
 # Uses stat(1) rather than parsing ls(1) output, which avoids fragile
 # positional pattern matching on permission strings that vary across systems
@@ -111,13 +139,18 @@ debug_msg() {
 # stat -f '%Su' returns the owning username.
 # stat -f '%Lp' returns the numeric permission bits in octal as a 3- or
 # 4-digit string (e.g. "600", "644", "755").  The leading-zero form
-# $(( 0$octal & 022 )) causes the shell to interpret the value as octal
+# $(( 0$octal & 077 )) causes the shell to interpret the value as octal
 # without requiring the non-POSIX 8# base prefix.
 config_is_safe_to_source() {
   file="$1"
 
   if [ ! -f "$file" ]; then
     echo "Config file is not a regular file: $file" >&2
+    return 1
+  fi
+
+  if [ ! -r "$file" ]; then
+    echo "Config file is not readable: $file" >&2
     return 1
   fi
 
@@ -133,11 +166,8 @@ config_is_safe_to_source() {
     return 1
   fi
 
-  # '%Lp' returns the numeric permission bits in octal, e.g. "600" or "644".
   octal="$(stat -f '%Lp' "$file" 2>/dev/null)"
 
-  # Validate that stat returned a well-formed octal string before using it in
-  # arithmetic.  Accept 3- or 4-digit strings composed of octal digits only.
   case "$octal" in
     [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7])
       ;;
@@ -147,10 +177,8 @@ config_is_safe_to_source() {
       ;;
   esac
 
-  # Mask 022: group-write (020) and world-write (002).
-  # The leading zero causes the shell to interpret $octal as octal.
-  if [ "$(( 0${octal} & 022 ))" -ne 0 ]; then
-    echo "Config file must not be group-writable or world-writable: $file (mode: ${octal})" >&2
+  if [ "$(( 0${octal} & 077 ))" -ne 0 ]; then
+    echo "Config file must not have group or world permissions: $file (mode: ${octal})" >&2
     echo "Run: chmod 0600 $file" >&2
     return 1
   fi
@@ -160,17 +188,18 @@ config_is_safe_to_source() {
 
 load_config_file() {
   file="$1"
+
   if [ ! -e "$file" ]; then
-    return 0
+    echo "Config file not found: $file" >&2
+    exit 2
   fi
+
   if ! config_is_safe_to_source "$file"; then
     exit 2
   fi
-  # Shell-style config file.  Sourcing executes arbitrary shell code; the
-  # ownership and permission checks above are the primary guard against
-  # unintended execution.
+
   . "$file"
-  # Prevent the sourced file from altering command lookup behavior.
+
   PATH="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin"
   return 0
 }
@@ -181,20 +210,6 @@ validate_config() {
     exit 2
   fi
 
-  # Validate each peer name and check for post-sanitization collisions in a
-  # single pass.
-  #
-  # Character validation: Tailscale Magic DNS names are standard DNS hostnames;
-  # allow alphanumerics, hyphens, underscores, and dots only.  This prevents
-  # shell metacharacter injection when peer names are word-split from $PEERS
-  # and passed verbatim to tailscale ping.
-  #
-  # Collision detection: safe_peer_name maps several distinct peer names to
-  # the same shell variable name (e.g. "router-a", "router.a", and "router_a"
-  # all become "router_a").  Two peers that collide after sanitization would
-  # silently share the same in-memory relay counter, producing incorrect
-  # restart decisions.  The seen_safe list uses space-delimited membership
-  # testing to detect this before the daemon starts.
   _seen_safe=""
   for _vpeer in $PEERS; do
     case "$_vpeer" in
@@ -226,8 +241,16 @@ validate_config() {
     echo "PING_COUNT must be a positive integer: $PING_COUNT" >&2
     exit 2
   fi
-  if ! is_positive_int "$RESTART_COOLDOWN"; then
-    echo "RESTART_COOLDOWN must be a positive integer: $RESTART_COOLDOWN" >&2
+  if ! is_positive_int "$RESTART_COOLDOWN_MIN"; then
+    echo "RESTART_COOLDOWN_MIN must be a positive integer: $RESTART_COOLDOWN_MIN" >&2
+    exit 2
+  fi
+  if ! is_positive_int "$RESTART_COOLDOWN_MAX"; then
+    echo "RESTART_COOLDOWN_MAX must be a positive integer: $RESTART_COOLDOWN_MAX" >&2
+    exit 2
+  fi
+  if [ "$RESTART_COOLDOWN_MAX" -lt "$RESTART_COOLDOWN_MIN" ]; then
+    echo "RESTART_COOLDOWN_MAX (${RESTART_COOLDOWN_MAX}) must be >= RESTART_COOLDOWN_MIN (${RESTART_COOLDOWN_MIN})" >&2
     exit 2
   fi
   if ! is_positive_int "$CURL_TIMEOUT"; then
@@ -250,9 +273,6 @@ notify() {
     log_msg "Pushover notification failed: curl not found"
     return 1
   fi
-  # Note: --form-string passes credentials as multipart/form-data fields,
-  # which are transiently visible in the process table.  On pfSense the
-  # process table is readable only by root, so the practical exposure is low.
   if ! curl -fsS --max-time "$CURL_TIMEOUT" \
     --form-string "token=${PUSHOVER_TOKEN}" \
     --form-string "user=${PUSHOVER_USER}" \
@@ -266,17 +286,6 @@ notify() {
 }
 
 # ---- Per-peer variable helpers ---------------------------------------------
-#
-# Peer state is stored in plain shell variables named:
-#   tsw_<attr>_<safe_peer_name>
-#
-# safe_peer_name replaces every character outside [A-Za-z0-9_] with an
-# underscore so the composed variable name is always a valid shell identifier.
-#
-# get_peer_attr and set_peer_attr use eval only to expand or assign a variable
-# whose name is constructed from the validated, sanitized components above.
-# In get_peer_attr the default value is applied outside eval so that an
-# attacker-controlled default string cannot be executed as shell code.
 
 safe_peer_name() {
   printf '%s' "$1" | sed 's/[^A-Za-z0-9_]/_/g'
@@ -294,9 +303,6 @@ get_peer_attr() {
   peer="$2"
   default="$3"
   var="$(peer_var "$attr" "$peer")"
-  # Eval expands only the named variable into _gpa_tmp.
-  # The default is applied afterward in plain shell so that the default
-  # argument is never passed to eval and cannot be executed as code.
   eval "_gpa_tmp=\"\${${var}}\""
   if [ -z "$_gpa_tmp" ]; then
     printf '%s\n' "$default"
@@ -323,37 +329,80 @@ reset_all_peer_state_after_restart() {
 
 # ---- Restart cooldown state ------------------------------------------------
 
-# last_restart_epoch NOW
+# random_cooldown_seconds
 #
-# Reads the cooldown state file and returns the epoch timestamp of the last
-# restart attempt, or 0 if none is recorded.
+# Returns a random integer in [RESTART_COOLDOWN_MIN, RESTART_COOLDOWN_MAX].
+# Uses jot(1), which is available on FreeBSD/pfSense.
 #
-# NOW must be passed in by the caller (the current epoch from date '+%s') so
-# that the future-timestamp check uses the same reference point as the
-# elapsed-time calculation in cooldown_remaining, avoiding a race if the
-# clock second rolls over between two separate date calls.
+# -w '%d' forces integer output, preventing jot from returning a
+# floating-point value on some inputs.
 #
-# If the file contains a future timestamp (corrupt or manually edited), 0 is
-# returned and the cooldown is treated as not active.  Returning 0 rather than
-# clamping to NOW is important: clamping would cause cooldown_remaining to
-# compute elapsed = NOW - NOW = 0, which is less than RESTART_COOLDOWN, and
-# would impose a full cooldown window on every call for as long as the corrupt
-# file exists.
-last_restart_epoch() {
+# Falls back to RESTART_COOLDOWN_MIN if jot is unavailable or returns
+# something that is not a plain positive integer.  This keeps the watchdog
+# operational even if jot behaves unexpectedly; the fallback value is
+# predictable and safe, just not randomized.
+#
+# When MIN == MAX the range is degenerate; that case is handled explicitly
+# to avoid jot oddities with a zero-width range on some FreeBSD versions.
+random_cooldown_seconds() {
+  if [ "$RESTART_COOLDOWN_MIN" -eq "$RESTART_COOLDOWN_MAX" ]; then
+    printf '%s\n' "$RESTART_COOLDOWN_MIN"
+    return
+  fi
+
+  if ! command -v jot >/dev/null 2>&1; then
+    log_msg "jot not found; falling back to RESTART_COOLDOWN_MIN=${RESTART_COOLDOWN_MIN}"
+    printf '%s\n' "$RESTART_COOLDOWN_MIN"
+    return
+  fi
+
+  value="$(jot -r -w '%d' 1 "$RESTART_COOLDOWN_MIN" "$RESTART_COOLDOWN_MAX" 2>/dev/null)"
+
+  case "$value" in
+    ''|*[!0-9]*)
+      log_msg "jot returned unexpected value '${value}'; falling back to RESTART_COOLDOWN_MIN=${RESTART_COOLDOWN_MIN}"
+      printf '%s\n' "$RESTART_COOLDOWN_MIN"
+      ;;
+    *)
+      printf '%s\n' "$value"
+      ;;
+  esac
+}
+
+# next_restart_epoch NOW
+#
+# Reads the cooldown state file and returns the epoch timestamp at which
+# the next restart attempt is allowed, or 0 if none is recorded.
+#
+# The file stores a future epoch (now + random cooldown) written at the time
+# of the last restart attempt.  Storing the next-allowed time rather than
+# the last-attempt time means this function does not need to recompute elapsed
+# time or remember which random cooldown was chosen.
+#
+# NOW must be passed in by the caller so that the future-timestamp comparison
+# uses the same reference point as the elapsed calculation in
+# cooldown_remaining, avoiding a race if the clock second rolls over between
+# two separate date calls.
+#
+# If the file contains a value more than one maximum cooldown window plus a
+# small drift margin past NOW, it is treated as corrupt or the result of a
+# large clock jump and is ignored rather than blocking restarts indefinitely.
+next_restart_epoch() {
   now="$1"
-  if [ ! -r "$LAST_RESTART_FILE" ]; then
+  if [ ! -r "$NEXT_RESTART_FILE" ]; then
     printf '0\n'
     return
   fi
-  value="$(cat "$LAST_RESTART_FILE" 2>/dev/null)"
+  value="$(cat "$NEXT_RESTART_FILE" 2>/dev/null)"
   case "$value" in
     ''|*[!0-9]*)
       printf '0\n'
       return
       ;;
   esac
-  if [ "$value" -gt "$now" ]; then
-    log_msg "Warning: last restart timestamp is in the future (${value} > ${now}); ignoring cooldown state"
+  ceiling=$(( now + RESTART_COOLDOWN_MAX + 60 ))
+  if [ "$value" -gt "$ceiling" ]; then
+    log_msg "Warning: next_restart_allowed timestamp is implausibly far in the future (${value}); ignoring cooldown state"
     printf '0\n'
   else
     printf '%s\n' "$value"
@@ -362,26 +411,28 @@ last_restart_epoch() {
 
 cooldown_remaining() {
   now="$(date '+%s')"
-  # Pass now to last_restart_epoch so both functions use the same reference
-  # point and a clock-second rollover between two date calls cannot produce
-  # a spurious negative elapsed value.
-  last="$(last_restart_epoch "$now")"
-  elapsed=$((now - last))
+  next="$(next_restart_epoch "$now")"
 
-  # A negative elapsed value means the system clock moved backward (NTP step
-  # correction, VM resume, etc.).  Treat it as zero elapsed rather than
-  # computing a large spurious cooldown that blocks restarts.
-  if [ "$elapsed" -lt 0 ]; then
-    log_msg "Warning: clock skew detected (elapsed=${elapsed}s since last restart); ignoring cooldown"
+  if [ "$next" -eq 0 ]; then
     printf '0\n'
     return
   fi
 
-  if [ "$elapsed" -lt "$RESTART_COOLDOWN" ]; then
-    printf '%s\n' $((RESTART_COOLDOWN - elapsed))
-  else
+  remaining=$(( next - now ))
+
+  # A non-positive remaining value means the cooldown has expired, or the
+  # clock moved forward past the stored next-allowed time (NTP step, VM
+  # resume, etc.).  A backward clock step would make remaining larger, which
+  # the "implausibly far future" guard in next_restart_epoch handles instead.
+  if [ "$remaining" -le 0 ]; then
+    if [ "$remaining" -lt -60 ]; then
+      log_msg "Warning: clock skew detected (cooldown expired ${remaining} seconds ago); proceeding"
+    fi
     printf '0\n'
+    return
   fi
+
+  printf '%s\n' "$remaining"
 }
 
 mark_restart_attempt() {
@@ -389,14 +440,21 @@ mark_restart_attempt() {
     log_msg "Could not create state directory: ${STATE_DIR}"
     return 1
   fi
-  # Write only on an actual restart attempt so that normal healthy operation
-  # causes no disk writes.  A failure here is logged but not fatal: the
-  # consequence is that cooldown persistence is lost across this attempt,
-  # which is preferable to blocking the restart entirely.
-  if ! date '+%s' > "$LAST_RESTART_FILE" 2>/dev/null; then
-    log_msg "Could not write restart cooldown state: ${LAST_RESTART_FILE}"
+
+  # Choose a random cooldown and compute the next-allowed timestamp.
+  # This is done on every restart attempt — success or failure — so that
+  # multiple routers monitoring one another do not synchronize their retry
+  # timing even when they all fail to restart at the same time.
+  cooldown="$(random_cooldown_seconds)"
+  now="$(date '+%s')"
+  next=$(( now + cooldown ))
+
+  if ! printf '%s\n' "$next" > "$NEXT_RESTART_FILE" 2>/dev/null; then
+    log_msg "Could not write restart cooldown state: ${NEXT_RESTART_FILE}"
     return 1
   fi
+
+  log_msg "Next restart allowed at epoch ${next} (in ${cooldown}s)"
   return 0
 }
 
@@ -436,6 +494,11 @@ classify_ping_output() {
   '
 }
 
+# check_peer_path PEER
+#
+# Runs tailscale ping and returns the classification (direct/relayed/unknown)
+# on stdout.  All debug output goes to stderr so that the return value on
+# stdout is always exactly one word and is safe to capture with $().
 check_peer_path() {
   peer="$1"
   output="$(tailscale ping -c "$PING_COUNT" "$peer" 2>&1)"
@@ -443,7 +506,7 @@ check_peer_path() {
   class="$(printf '%s\n' "$output" | classify_ping_output)"
   if [ "$DEBUG" -eq 1 ]; then
     debug_msg "peer=${peer} class=${class} tailscale_ping_rc=${rc}"
-    printf '%s\n' "$output" | sed 's/^/  /'
+    printf '%s\n' "$output" | sed 's/^/  /' >&2
   fi
   printf '%s\n' "$class"
 }
@@ -457,8 +520,9 @@ restart_tailscale_services() {
 
   log_msg "Restarting Tailscale services after peer ${reason_peer} was relayed for ${reason_count} consecutive checks"
 
-  # Write the cooldown timestamp only on an actual restart attempt so that
-  # normal healthy operation causes no disk writes.
+  # Write the next-allowed restart timestamp before attempting the restart.
+  # Done regardless of whether the restart succeeds so that a failed restart
+  # does not leave multiple routers free to retry in lockstep.
   mark_restart_attempt
 
   for svc in $RESTART_SERVICES; do
@@ -476,9 +540,6 @@ restart_tailscale_services() {
     msg="Tailscale watchdog: restarted ${RESTART_SERVICES} after peer ${reason_peer} was relayed for ${reason_count} consecutive checks."
     log_msg "$msg"
     notify "$msg"
-    # Reset peer state only on a successful restart.  Preserving the counter
-    # on failure means the watchdog can retry as soon as the cooldown expires
-    # without waiting for another full FAIL_THRESHOLD cycle to accumulate.
     reset_all_peer_state_after_restart
     return 0
   fi
@@ -486,7 +547,6 @@ restart_tailscale_services() {
   msg="Tailscale watchdog: restart FAILED after peer ${reason_peer} was relayed for ${reason_count} consecutive checks."
   log_msg "$msg"
   notify "$msg"
-  # Peer state is intentionally not reset here; see comment above.
   return 1
 }
 
@@ -530,13 +590,11 @@ handle_direct() {
 
   case "$state" in
     direct)
-      # No state change; suppress log noise during sustained healthy operation.
       ;;
     relayed|post_restart)
       log_msg "Peer ${peer} is direct (was ${state}; relay counter was ${count})"
       ;;
     *)
-      # Covers 'unknown' and the implicit empty state on daemon startup.
       log_msg "Peer ${peer} is direct (initial classification; was: ${state})"
       ;;
   esac
@@ -567,8 +625,6 @@ handle_unknown() {
     log_msg "Peer ${peer} path is unknown (was ${state})"
   fi
 
-  # An unknown result resets the consecutive-relayed counter.  A transient
-  # connectivity loss should not be accumulated toward the restart threshold.
   set_peer_attr count "$peer" 0
   set_peer_attr state "$peer" unknown
   set_peer_attr threshold_seen "$peer" none
@@ -600,8 +656,6 @@ check_all_peers() {
 
 handle_shutdown() {
   log_msg "Daemon stopping"
-  # Kill the background sleep process, if present, so the daemon exits
-  # promptly rather than waiting up to CHECK_INTERVAL seconds.
   if [ -n "$SLEEP_PID" ]; then
     kill "$SLEEP_PID" 2>/dev/null
     SLEEP_PID=""
@@ -610,17 +664,7 @@ handle_shutdown() {
 }
 
 # ---- Config path pre-scan --------------------------------------------------
-#
-# The config file must be loaded before normal option parsing so that
-# config-file values are in place when command-line overrides are applied.
-# This requires a dedicated pre-scan pass to find any -f argument before
-# getopts runs.
-#
-# Design note: if -f is supplied, the config at that path is loaded during
-# this pre-scan.  The getopts block below also captures -f into CONFIG_FILE
-# for logging consistency but does not reload the file.  Clustered short
-# options (e.g. -df) are not supported; -f must be supplied as a separate
-# flag (e.g. -d -f /path/to/config).
+
 next_is_config=0
 for arg in "$@"; do
   if [ "$next_is_config" -eq 1 ]; then
@@ -656,8 +700,6 @@ while getopts "t1df:i:n:c:h" opt; do
       ;;
     f)
       CONFIG_FILE="$OPTARG"
-      # The config file was already loaded during the pre-scan above.
-      # This assignment keeps CONFIG_FILE consistent for the startup log message.
       ;;
     i)
       if ! is_positive_int "$OPTARG"; then
@@ -700,7 +742,7 @@ validate_config
 
 trap handle_shutdown INT TERM
 
-log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown=${RESTART_COOLDOWN}s test=${TEST}"
+log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown_min=${RESTART_COOLDOWN_MIN}s cooldown_max=${RESTART_COOLDOWN_MAX}s test=${TEST}"
 
 if [ "$ONE_SHOT" -eq 1 ]; then
   check_all_peers
@@ -709,10 +751,6 @@ fi
 
 while :; do
   check_all_peers
-  # Background the sleep and use wait so that SIGTERM/SIGINT is delivered
-  # promptly rather than being deferred until the sleep interval expires.
-  # POSIX guarantees traps are checked when wait returns; FreeBSD sh delivers
-  # the signal to the process group, causing wait to return immediately.
   sleep "$CHECK_INTERVAL" &
   SLEEP_PID=$!
   wait $SLEEP_PID
