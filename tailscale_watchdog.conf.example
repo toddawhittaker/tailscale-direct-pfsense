@@ -21,10 +21,12 @@ PUSHOVER_USER=""  # Add your_pushover_user_key here to enable notifications.
 #   A-Z a-z 0-9 . _ -
 #
 # Avoid names that collapse to the same internal state name after sanitization.
-# For example, do not include both:
+# For example, do not include multiple names such as:
 #   router-a
 #   router.a
 #   router_a
+#
+# because they all collapse internally to the same state name.
 
 PEERS="router1 router2"
 
@@ -44,8 +46,24 @@ PING_COUNT=5
 
 # ---- Restart behavior -------------------------------------------------------
 
-# Seconds after a restart attempt during which another restart is suppressed.
-RESTART_COOLDOWN=900
+# Minimum and maximum seconds after a restart attempt before another restart
+# attempt is allowed.
+#
+# After each restart attempt, the watchdog selects a random value in this range.
+# This helps prevent multiple routers that monitor one another from restarting
+# in synchronized cycles.
+#
+# Example:
+#   RESTART_COOLDOWN_MIN=900
+#   RESTART_COOLDOWN_MAX=1800
+#
+# means the next restart attempt will be allowed 15 to 30 minutes later.
+#
+# To use a fixed cooldown instead of a randomized cooldown, set both values
+# to the same number.
+
+RESTART_COOLDOWN_MIN=900
+RESTART_COOLDOWN_MAX=1800
 
 # Services to restart when the relay threshold is reached.
 RESTART_SERVICES="tailscaled pfsense_tailscaled"

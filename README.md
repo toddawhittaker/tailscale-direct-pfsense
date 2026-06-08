@@ -13,7 +13,7 @@ The watchdog:
 - checks configured Tailscale peers using `tailscale ping`
 - detects sustained relayed connectivity
 - restarts local Tailscale services after a configurable threshold
-- applies a cooldown between restart attempts
+- applies a randomized cooldown between restart attempts
 - optionally sends a Pushover notification when it restarts services
 - runs as a pfSense/FreeBSD rc service
 
@@ -86,8 +86,11 @@ FAIL_THRESHOLD=5
 # Number of tailscale ping attempts per peer per check.
 PING_COUNT=5
 
-# Seconds to wait before another restart attempt is allowed.
-RESTART_COOLDOWN=900
+# Minimum and maximum seconds after a restart attempt before another
+# restart attempt is allowed. A random value in this range is selected
+# after each restart attempt.
+RESTART_COOLDOWN_MIN=900
+RESTART_COOLDOWN_MAX=2700
 
 # Services restarted when the threshold is reached.
 RESTART_SERVICES="tailscaled pfsense_tailscaled"
@@ -105,6 +108,28 @@ Keep the config file private:
 ```sh
 chown root:wheel /usr/local/etc/tailscale_watchdog.conf
 chmod 0600 /usr/local/etc/tailscale_watchdog.conf
+```
+
+### Cooldown behavior
+
+The watchdog waits for `FAIL_THRESHOLD` consecutive relayed checks before attempting a restart. After a restart attempt, it waits a random number of seconds between `RESTART_COOLDOWN_MIN` and `RESTART_COOLDOWN_MAX` before another restart attempt is allowed.
+
+The randomized cooldown helps avoid multiple routers restarting in sync when several of them are monitoring each other.
+
+For example:
+
+```sh
+RESTART_COOLDOWN_MIN=900
+RESTART_COOLDOWN_MAX=2700
+```
+
+allows the next restart attempt somewhere between 15 and 45 minutes later.
+
+If you want a fixed cooldown, set both values to the same number:
+
+```sh
+RESTART_COOLDOWN_MIN=900
+RESTART_COOLDOWN_MAX=900
 ```
 
 ## Test before enabling
@@ -349,7 +374,7 @@ Relay fallback can be caused by NAT behavior, firewall policy, ISP path changes,
 
 ## Development note
 
-This project was developed with AI assistance. The code and documentation were reviewed and edited by me before publication.
+This project was developed with AI assistance. The code and documentation were reviewed and edited by the project maintainer before publication.
 
 ## License
 

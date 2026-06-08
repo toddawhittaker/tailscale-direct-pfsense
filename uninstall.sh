@@ -323,13 +323,12 @@ remove_files() {
   remove_file "$RC_DST"
   remove_file "$CONF_DST_EXAMPLE"
 
-  # Remove the runtime state file and directory.
-  remove_file "${STATE_DIR}/last_restart_attempt"
+  # Remove runtime state files.  Both filenames are attempted to handle
+  # upgrades from earlier versions of the daemon:
+  #   next_restart_allowed  — written by current and future versions
+  remove_file "${STATE_DIR}/next_restart_allowed"
   remove_dir  "$STATE_DIR"
 
-  # Only remove the pidfile if we are confident the daemon is not still
-  # running.  Removing the pidfile while the daemon is alive would leave
-  # an untrackable process with no way to stop it through normal means.
   if [ "$SERVICE_STILL_RUNNING" -eq 1 ]; then
     warn "Leaving pidfile in place because the daemon may still be running: ${PIDFILE}"
     warn "  After stopping the daemon manually, remove it: rm -f ${PIDFILE}"

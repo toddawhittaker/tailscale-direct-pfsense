@@ -1,284 +1,763 @@
 #!/bin/sh
 #
-# PROVIDE: tailscale_watchdog
-# REQUIRE: NETWORKING tailscaled pfsense_tailscaled
-# KEYWORD: shutdown
+# tailscale_watchdogd
 #
-# Add the following to /etc/rc.conf.local to enable:
-#   tailscale_watchdog_enable="YES"
+# Foreground daemon that checks selected Tailscale peers once per interval.
+# If a peer is relayed for FAIL_THRESHOLD consecutive checks, restart
+# tailscaled and pfsense_tailscaled, then send a Pushover notification.
 #
-# Optional rc.conf.local settings and their defaults:
-#   tailscale_watchdog_command="/usr/local/sbin/tailscale_watchdogd"
-#   tailscale_watchdog_flags="-f /usr/local/etc/tailscale_watchdog.conf"
-#   tailscale_watchdog_pidfile="/var/run/tailscale_watchdog.pid"
+# Normal healthy operation performs no per-minute disk writes.
 #
-# Note: tailscale_watchdog_flags is word-split by the shell when passed to
-# the daemon.  Arguments whose values contain spaces are not supported.
-# For normal usage (a -f flag and a plain config path) this is not a
-# limitation in practice.
+# Usage:
+#   tailscale_watchdogd [-t] [-1] [-d] [-f config_file] [-i seconds] [-n threshold] [-c ping_count]
 #
-# Note: Do not include -d (debug mode) in tailscale_watchdog_flags.  Debug
-# output is intended for foreground test runs only.  When run as a service,
-# the daemon's output is captured to a temp file during startup and then
-# discarded.  Running with -d would cause continuous debug output to be
-# written to a deleted-but-open file descriptor, consuming disk space
-# invisibly until the daemon exits.  For debug/test use, run the daemon
-# directly:
-#   /usr/local/sbin/tailscale_watchdogd -t -1 -d
-#   /usr/local/sbin/tailscale_watchdogd -t -d
+# Options:
+#   -t    Test mode: never restart services.
+#   -1    One-shot mode: run one check cycle and exit.
+#   -d    Debug mode: print classifications and tailscale ping output to stderr.
+#   -f    Config file path. Default: /usr/local/etc/tailscale_watchdog.conf.
+#   -i    Check interval in seconds. Overrides config/default.
+#   -n    Consecutive relayed checks required before restart. Overrides config/default.
+#   -c    tailscale ping count. Overrides config/default.
 #
-# Note: REQUIRE: tailscaled assumes tailscaled is managed as an rc service
-# on this pfSense installation with a matching PROVIDE token.  Verify before
-# deploying:
-#   grep -R "^# PROVIDE:" /etc/rc.d /usr/local/etc/rc.d | grep -i tailscale
-# If pfsense_tailscaled also has a PROVIDE token, add it to REQUIRE as well.
-# If neither is rc.d-managed, remove them from the REQUIRE line to avoid
-# boot-time dependency warnings.
+# Security notes:
+#   - The config file must be owned by root and not readable, writable, or
+#     executable by group or world (mode 0600 recommended).  Permissions are
+#     verified with stat(1) before sourcing.
+#   - Pushover credentials are passed as curl --form-string arguments, which
+#     means they are briefly visible in the process table.  On pfSense, process
+#     table access is restricted to root, so the practical risk is low.
+#   - Peer names are validated to contain only hostname-safe characters before
+#     being passed to tailscale ping, and checked for post-sanitization
+#     collisions that would cause two peers to share the same state counter.
+#
+PATH="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin"
+TAG="tailscale_watchdog"
 
-. /etc/rc.subr
-
-name="tailscale_watchdog"
-rcvar="tailscale_watchdog_enable"
-
-load_rc_config "$name"
-
-: ${tailscale_watchdog_enable:="NO"}
-: ${tailscale_watchdog_command:="/usr/local/sbin/tailscale_watchdogd"}
-: ${tailscale_watchdog_flags:="-f /usr/local/etc/tailscale_watchdog.conf"}
-: ${tailscale_watchdog_pidfile:="/var/run/tailscale_watchdog.pid"}
-
-# Use the conventional rc.subr pidfile variable name; the custom
-# start/stop/status functions below read this value.
-pidfile="${tailscale_watchdog_pidfile}"
-
-start_cmd="${name}_start"
-stop_cmd="${name}_stop"
-restart_cmd="${name}_restart"
-status_cmd="${name}_status"
-
-# valid_pid VALUE
+# ---- Configuration defaults ------------------------------------------------
 #
-# Returns 0 if VALUE is a plausible process ID: a positive integer greater
-# than 1.  Returns 1 otherwise.
+# These defaults may be overridden by the config file.
+# Command-line flags override both defaults and config-file values.
+CONFIG_FILE="/usr/local/etc/tailscale_watchdog.conf"
+PUSHOVER_TOKEN=""
+PUSHOVER_USER=""
+PEERS="router router2"
+CHECK_INTERVAL=60
+FAIL_THRESHOLD=5
+PING_COUNT=5
+# Minimum and maximum seconds after a restart attempt before another restart
+# is allowed.  After each restart attempt a random value in this range is
+# chosen as the cooldown for that router.  Using a range rather than a fixed
+# value prevents multiple routers that monitor one another from settling into
+# synchronized restart cycles: each picks its own next-allowed time
+# independently, so they naturally spread apart even if they restart together.
 #
-# This guard is applied to every PID read from the pidfile before it is
-# passed to kill(1).  Without it, a corrupt or maliciously crafted pidfile
-# could cause kill to receive a negative value or zero, which on some
-# implementations sends a signal to a process group or all processes
-# visible to the caller.  Since this script runs as root, that risk is not
-# acceptable.
+# Example with three routers and RESTART_COOLDOWN_MIN=900 / MAX=2700:
+#   router1 restarts -> next restart allowed in 1248 seconds
+#   router2 restarts -> next restart allowed in 2341 seconds
+#   router3 restarts -> next restart allowed in 987 seconds
 #
-# PID 0 and PID 1 are refused because this daemon should never occupy either
-# slot, and sending signals to them would be destructive.
-#
-# $! (set by the shell after backgrounding a process) is always a valid
-# positive integer and does not need this check.  Only values read from
-# disk require validation.
-valid_pid() {
+# Set MIN and MAX to the same value to get a fixed cooldown.
+RESTART_COOLDOWN_MIN=900
+RESTART_COOLDOWN_MAX=2700
+RESTART_SERVICES="tailscaled pfsense_tailscaled"
+STATE_DIR="/var/run/tailscale_watchdog"
+# The state file stores the epoch timestamp at which the next restart attempt
+# is allowed.  It is written after every restart attempt (success or failure)
+# with a randomly chosen value between now+MIN and now+MAX.  Storing the
+# next-allowed time rather than the last-attempt time means cooldown_remaining
+# does not need to recompute elapsed time or remember which random cooldown
+# was chosen.
+NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
+CURL_TIMEOUT=10
+
+# ---- Runtime flags ---------------------------------------------------------
+TEST=0
+ONE_SHOT=0
+DEBUG=0
+
+# Holds the PID of the background sleep process during the main loop so that
+# handle_shutdown can kill it promptly on SIGTERM/SIGINT.
+SLEEP_PID=""
+
+# ---- Utility functions -----------------------------------------------------
+
+usage() {
+  cat >&2 <<EOF
+Usage: $0 [-t] [-1] [-d] [-f config_file] [-i seconds] [-n threshold] [-c ping_count]
+Options:
+  -t    Test mode: never restart services.
+  -1    One-shot mode: run one check cycle and exit.
+  -d    Debug mode: print classifications and tailscale ping output to stderr.
+  -f    Config file path. Default: ${CONFIG_FILE}.
+  -i    Check interval in seconds. Default: ${CHECK_INTERVAL}.
+  -n    Consecutive relayed checks required before restart. Default: ${FAIL_THRESHOLD}.
+  -c    tailscale ping count. Default: ${PING_COUNT}.
+EOF
+}
+
+is_positive_int() {
   case "$1" in
     ''|*[!0-9]*)
       return 1
       ;;
   esac
-  [ "$1" -gt 1 ] 2>/dev/null
+  [ "$1" -gt 0 ] 2>/dev/null
 }
 
-# kill_and_wait PID DESCRIPTION
+# log_msg and debug_msg write exclusively to stderr (via logger and/or the
+# debug printf).  They must never write to stdout because both functions are
+# called from within command substitutions (e.g. cooldown_remaining,
+# next_restart_epoch).  Any stdout output from those contexts would be
+# captured into the calling variable rather than reaching the terminal,
+# corrupting the return value.
+log_msg() {
+  logger -t "$TAG" "$*"
+  if [ "$DEBUG" -eq 1 ]; then
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+  fi
+}
+
+debug_msg() {
+  if [ "$DEBUG" -eq 1 ]; then
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+  fi
+}
+
+# config_is_safe_to_source FILE
 #
-# Sends SIGTERM to PID and waits up to 5 seconds for it to exit.  If it
-# does not exit gracefully, sends SIGKILL and waits up to 5 more seconds.
-# Prints a warning and returns 1 if the process survives SIGKILL.
-# Returns 0 if the process exits by any means.
+# Verifies that FILE is:
+#   - a regular file
+#   - readable by the current process
+#   - owned by root
+#   - has no group or world permissions set (mode 0600 or stricter)
 #
-# Used in tailscale_watchdog_start to clean up a daemon that was started
-# but cannot be tracked due to a pidfile write failure.  The same escalation
-# logic used in tailscale_watchdog_stop is applied here for consistency.
-kill_and_wait() {
-  _kw_pid="$1"
-  _kw_desc="$2"
+# Uses stat(1) rather than parsing ls(1) output, which avoids fragile
+# positional pattern matching on permission strings that vary across systems
+# and can include ACL indicator characters.
+#
+# stat -f '%Su' returns the owning username.
+# stat -f '%Lp' returns the numeric permission bits in octal as a 3- or
+# 4-digit string (e.g. "600", "644", "755").  The leading-zero form
+# $(( 0$octal & 077 )) causes the shell to interpret the value as octal
+# without requiring the non-POSIX 8# base prefix.
+config_is_safe_to_source() {
+  file="$1"
 
-  kill "$_kw_pid" 2>/dev/null
+  if [ ! -f "$file" ]; then
+    echo "Config file is not a regular file: $file" >&2
+    return 1
+  fi
 
-  _kw_i=0
-  while kill -0 "$_kw_pid" 2>/dev/null; do
-    if [ "$_kw_i" -ge 5 ]; then
-      echo "${_kw_desc}: process ${_kw_pid} did not stop after SIGTERM; sending SIGKILL" >&2
-      kill -KILL "$_kw_pid" 2>/dev/null
+  if [ ! -r "$file" ]; then
+    echo "Config file is not readable: $file" >&2
+    return 1
+  fi
 
-      _kw_j=0
-      while kill -0 "$_kw_pid" 2>/dev/null; do
-        if [ "$_kw_j" -ge 5 ]; then
-          echo "${_kw_desc}: process ${_kw_pid} survived SIGKILL; manual cleanup required" >&2
-          return 1
-        fi
-        _kw_j=$((_kw_j + 1))
-        sleep 1
-      done
+  if ! command -v stat >/dev/null 2>&1; then
+    echo "stat(1) not found; cannot verify config file permissions" >&2
+    return 1
+  fi
 
-      return 0
-    fi
-    _kw_i=$((_kw_i + 1))
-    sleep 1
-  done
+  owner="$(stat -f '%Su' "$file" 2>/dev/null)"
+  if [ "$owner" != "root" ]; then
+    echo "Config file must be owned by root: $file (current owner: ${owner:-unknown})" >&2
+    echo "Run: chown root:wheel $file" >&2
+    return 1
+  fi
+
+  octal="$(stat -f '%Lp' "$file" 2>/dev/null)"
+
+  case "$octal" in
+    [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7])
+      ;;
+    *)
+      echo "Could not determine permissions for config file: $file (stat returned: '${octal}')" >&2
+      return 1
+      ;;
+  esac
+
+  if [ "$(( 0${octal} & 077 ))" -ne 0 ]; then
+    echo "Config file must not have group or world permissions: $file (mode: ${octal})" >&2
+    echo "Run: chmod 0600 $file" >&2
+    return 1
+  fi
 
   return 0
 }
 
-tailscale_watchdog_start() {
-  if [ -f "$pidfile" ]; then
-    pid="$(cat "$pidfile" 2>/dev/null)"
-    if valid_pid "$pid" && kill -0 "$pid" 2>/dev/null; then
-      echo "${name} already running as pid ${pid}"
-      return 0
+load_config_file() {
+  file="$1"
+
+  if [ ! -e "$file" ]; then
+    echo "Config file not found: $file" >&2
+    exit 2
+  fi
+
+  if ! config_is_safe_to_source "$file"; then
+    exit 2
+  fi
+
+  . "$file"
+
+  PATH="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin"
+  return 0
+}
+
+validate_config() {
+  if [ -z "$PEERS" ]; then
+    echo "PEERS must not be empty" >&2
+    exit 2
+  fi
+
+  _seen_safe=""
+  for _vpeer in $PEERS; do
+    case "$_vpeer" in
+      *[!A-Za-z0-9._-]*)
+        echo "Invalid peer name (contains shell-unsafe characters): ${_vpeer}" >&2
+        exit 2
+        ;;
+    esac
+    _vsafe="$(safe_peer_name "$_vpeer")"
+    case " ${_seen_safe} " in
+      *" ${_vsafe} "*)
+        echo "Invalid peer list: '${_vpeer}' collides with another peer after sanitization as '${_vsafe}'" >&2
+        exit 2
+        ;;
+    esac
+    _seen_safe="${_seen_safe} ${_vsafe}"
+  done
+  unset _vpeer _vsafe _seen_safe
+
+  if ! is_positive_int "$CHECK_INTERVAL"; then
+    echo "CHECK_INTERVAL must be a positive integer: $CHECK_INTERVAL" >&2
+    exit 2
+  fi
+  if ! is_positive_int "$FAIL_THRESHOLD"; then
+    echo "FAIL_THRESHOLD must be a positive integer: $FAIL_THRESHOLD" >&2
+    exit 2
+  fi
+  if ! is_positive_int "$PING_COUNT"; then
+    echo "PING_COUNT must be a positive integer: $PING_COUNT" >&2
+    exit 2
+  fi
+  if ! is_positive_int "$RESTART_COOLDOWN_MIN"; then
+    echo "RESTART_COOLDOWN_MIN must be a positive integer: $RESTART_COOLDOWN_MIN" >&2
+    exit 2
+  fi
+  if ! is_positive_int "$RESTART_COOLDOWN_MAX"; then
+    echo "RESTART_COOLDOWN_MAX must be a positive integer: $RESTART_COOLDOWN_MAX" >&2
+    exit 2
+  fi
+  if [ "$RESTART_COOLDOWN_MAX" -lt "$RESTART_COOLDOWN_MIN" ]; then
+    echo "RESTART_COOLDOWN_MAX (${RESTART_COOLDOWN_MAX}) must be >= RESTART_COOLDOWN_MIN (${RESTART_COOLDOWN_MIN})" >&2
+    exit 2
+  fi
+  if ! is_positive_int "$CURL_TIMEOUT"; then
+    echo "CURL_TIMEOUT must be a positive integer: $CURL_TIMEOUT" >&2
+    exit 2
+  fi
+  if [ -z "$RESTART_SERVICES" ]; then
+    echo "RESTART_SERVICES must not be empty" >&2
+    exit 2
+  fi
+}
+
+notify() {
+  message="$1"
+  if [ -z "$PUSHOVER_TOKEN" ] || [ -z "$PUSHOVER_USER" ]; then
+    log_msg "Pushover notification skipped: token or user key is empty"
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    log_msg "Pushover notification failed: curl not found"
+    return 1
+  fi
+  if ! curl -fsS --max-time "$CURL_TIMEOUT" \
+    --form-string "token=${PUSHOVER_TOKEN}" \
+    --form-string "user=${PUSHOVER_USER}" \
+    --form-string "message=${message}" \
+    https://api.pushover.net/1/messages.json >/dev/null 2>&1
+  then
+    log_msg "Pushover notification failed"
+    return 1
+  fi
+  return 0
+}
+
+# ---- Per-peer variable helpers ---------------------------------------------
+
+safe_peer_name() {
+  printf '%s' "$1" | sed 's/[^A-Za-z0-9_]/_/g'
+}
+
+peer_var() {
+  attr="$1"
+  peer="$2"
+  safe="$(safe_peer_name "$peer")"
+  printf 'tsw_%s_%s' "$attr" "$safe"
+}
+
+get_peer_attr() {
+  attr="$1"
+  peer="$2"
+  default="$3"
+  var="$(peer_var "$attr" "$peer")"
+  eval "_gpa_tmp=\"\${${var}}\""
+  if [ -z "$_gpa_tmp" ]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$_gpa_tmp"
+  fi
+}
+
+set_peer_attr() {
+  attr="$1"
+  peer="$2"
+  value="$3"
+  var="$(peer_var "$attr" "$peer")"
+  eval "${var}=\$value"
+}
+
+reset_all_peer_state_after_restart() {
+  for peer in $PEERS; do
+    set_peer_attr count "$peer" 0
+    set_peer_attr state "$peer" post_restart
+    set_peer_attr threshold_seen "$peer" none
+  done
+}
+
+# ---- Restart cooldown state ------------------------------------------------
+
+# random_cooldown_seconds
+#
+# Returns a random integer in [RESTART_COOLDOWN_MIN, RESTART_COOLDOWN_MAX].
+# Uses jot(1), which is available on FreeBSD/pfSense.
+#
+# -w '%d' forces integer output, preventing jot from returning a
+# floating-point value on some inputs.
+#
+# Falls back to RESTART_COOLDOWN_MIN if jot is unavailable or returns
+# something that is not a plain positive integer.  This keeps the watchdog
+# operational even if jot behaves unexpectedly; the fallback value is
+# predictable and safe, just not randomized.
+#
+# When MIN == MAX the range is degenerate; that case is handled explicitly
+# to avoid jot oddities with a zero-width range on some FreeBSD versions.
+random_cooldown_seconds() {
+  if [ "$RESTART_COOLDOWN_MIN" -eq "$RESTART_COOLDOWN_MAX" ]; then
+    printf '%s\n' "$RESTART_COOLDOWN_MIN"
+    return
+  fi
+
+  if ! command -v jot >/dev/null 2>&1; then
+    log_msg "jot not found; falling back to RESTART_COOLDOWN_MIN=${RESTART_COOLDOWN_MIN}"
+    printf '%s\n' "$RESTART_COOLDOWN_MIN"
+    return
+  fi
+
+  value="$(jot -r -w '%d' 1 "$RESTART_COOLDOWN_MIN" "$RESTART_COOLDOWN_MAX" 2>/dev/null)"
+
+  case "$value" in
+    ''|*[!0-9]*)
+      log_msg "jot returned unexpected value '${value}'; falling back to RESTART_COOLDOWN_MIN=${RESTART_COOLDOWN_MIN}"
+      printf '%s\n' "$RESTART_COOLDOWN_MIN"
+      ;;
+    *)
+      printf '%s\n' "$value"
+      ;;
+  esac
+}
+
+# next_restart_epoch NOW
+#
+# Reads the cooldown state file and returns the epoch timestamp at which
+# the next restart attempt is allowed, or 0 if none is recorded.
+#
+# The file stores a future epoch (now + random cooldown) written at the time
+# of the last restart attempt.  Storing the next-allowed time rather than
+# the last-attempt time means this function does not need to recompute elapsed
+# time or remember which random cooldown was chosen.
+#
+# NOW must be passed in by the caller so that the future-timestamp comparison
+# uses the same reference point as the elapsed calculation in
+# cooldown_remaining, avoiding a race if the clock second rolls over between
+# two separate date calls.
+#
+# If the file contains a value more than one maximum cooldown window plus a
+# small drift margin past NOW, it is treated as corrupt or the result of a
+# large clock jump and is ignored rather than blocking restarts indefinitely.
+next_restart_epoch() {
+  now="$1"
+  if [ ! -r "$NEXT_RESTART_FILE" ]; then
+    printf '0\n'
+    return
+  fi
+  value="$(cat "$NEXT_RESTART_FILE" 2>/dev/null)"
+  case "$value" in
+    ''|*[!0-9]*)
+      printf '0\n'
+      return
+      ;;
+  esac
+  ceiling=$(( now + RESTART_COOLDOWN_MAX + 60 ))
+  if [ "$value" -gt "$ceiling" ]; then
+    log_msg "Warning: next_restart_allowed timestamp is implausibly far in the future (${value}); ignoring cooldown state"
+    printf '0\n'
+  else
+    printf '%s\n' "$value"
+  fi
+}
+
+cooldown_remaining() {
+  now="$(date '+%s')"
+  next="$(next_restart_epoch "$now")"
+
+  if [ "$next" -eq 0 ]; then
+    printf '0\n'
+    return
+  fi
+
+  remaining=$(( next - now ))
+
+  # A non-positive remaining value means the cooldown has expired, or the
+  # clock moved forward past the stored next-allowed time (NTP step, VM
+  # resume, etc.).  A backward clock step would make remaining larger, which
+  # the "implausibly far future" guard in next_restart_epoch handles instead.
+  if [ "$remaining" -le 0 ]; then
+    if [ "$remaining" -lt -60 ]; then
+      log_msg "Warning: clock skew detected (cooldown expired ${remaining} seconds ago); proceeding"
     fi
-    # Pidfile exists but contains an invalid or stale PID.  Remove it and
-    # proceed with starting rather than treating this as a hard error.
-    rm -f "$pidfile"
+    printf '0\n'
+    return
   fi
 
-  echo "Starting ${name}."
+  printf '%s\n' "$remaining"
+}
 
-  # Use mktemp with an explicit path template to create a temp file with an
-  # unpredictable name.  This avoids the symlink/clobber race that would exist
-  # with a predictable path like /tmp/${name}.start.$$.  The full template
-  # form is used rather than mktemp -t because -t has inconsistent semantics
-  # across implementations; the explicit template is unambiguous.
-  #
-  # Daemon output is captured here during startup so that early failure
-  # diagnostics (config errors, missing files, permission problems) can be
-  # shown to the operator if the process exits immediately.  The daemon logs
-  # normal operational messages via logger(1) and produces no stdout output
-  # during healthy operation, so this file will be empty and removed on a
-  # successful start.
-  start_log="$(mktemp "/tmp/${name}.start.XXXXXX")" || {
-    echo "${name} failed to create startup log temp file" >&2
-    return 1
-  }
-
-  ${tailscale_watchdog_command} ${tailscale_watchdog_flags} \
-    >"$start_log" 2>&1 &
-  daemon_pid=$!
-
-  # $! is shell-assigned and always a valid positive integer; no valid_pid
-  # check is needed here.  Only values read from disk require validation.
-  if ! echo "$daemon_pid" > "$pidfile"; then
-    echo "${name} failed to write pidfile ${pidfile}" >&2
-    # The daemon is running but cannot be tracked.  Kill it cleanly using
-    # the same SIGTERM-then-SIGKILL escalation used in tailscale_watchdog_stop
-    # so we do not leave an untracked process behind.
-    kill_and_wait "$daemon_pid" "$name"
-    rm -f "$start_log"
+mark_restart_attempt() {
+  if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+    log_msg "Could not create state directory: ${STATE_DIR}"
     return 1
   fi
 
-  # Give the daemon a moment to fail on startup errors, then verify it is
-  # still alive.  A one-second wait catches the most common early failures
-  # (missing binary, bad config, permission denied on state directory)
-  # without meaningfully delaying a successful start.
-  sleep 1
-  if ! kill -0 "$daemon_pid" 2>/dev/null; then
-    echo "${name} failed to start" >&2
-    if [ -s "$start_log" ]; then
-      echo "Startup output:" >&2
-      cat "$start_log" >&2
+  # Choose a random cooldown and compute the next-allowed timestamp.
+  # This is done on every restart attempt — success or failure — so that
+  # multiple routers monitoring one another do not synchronize their retry
+  # timing even when they all fail to restart at the same time.
+  cooldown="$(random_cooldown_seconds)"
+  now="$(date '+%s')"
+  next=$(( now + cooldown ))
+
+  if ! printf '%s\n' "$next" > "$NEXT_RESTART_FILE" 2>/dev/null; then
+    log_msg "Could not write restart cooldown state: ${NEXT_RESTART_FILE}"
+    return 1
+  fi
+
+  log_msg "Next restart allowed at epoch ${next} (in ${cooldown}s)"
+  return 0
+}
+
+# ---- Tailscale path classification -----------------------------------------
+#
+# Classification policy:
+#
+#   direct:
+#     At least one "pong from ... via ..." line exists that is not DERP and
+#     not peer-relay.  This handles the common case where initial pongs use
+#     DERP and later pongs upgrade to a direct path.
+#
+#   relayed:
+#     One or more pongs used DERP or peer-relay, and no direct pong appeared.
+#
+#   unknown:
+#     No usable pong path was found (timeout, peer offline, parse failure).
+
+classify_ping_output() {
+  awk '
+    /^pong from / && / via / {
+      if ($0 ~ / via DERP/ || $0 ~ / via peer-relay/) {
+        relayed = 1
+      } else {
+        direct = 1
+      }
+    }
+    END {
+      if (direct) {
+        print "direct"
+      } else if (relayed) {
+        print "relayed"
+      } else {
+        print "unknown"
+      }
+    }
+  '
+}
+
+# check_peer_path PEER
+#
+# Runs tailscale ping and returns the classification (direct/relayed/unknown)
+# on stdout.  All debug output goes to stderr so that the return value on
+# stdout is always exactly one word and is safe to capture with $().
+check_peer_path() {
+  peer="$1"
+  output="$(tailscale ping -c "$PING_COUNT" "$peer" 2>&1)"
+  rc=$?
+  class="$(printf '%s\n' "$output" | classify_ping_output)"
+  if [ "$DEBUG" -eq 1 ]; then
+    debug_msg "peer=${peer} class=${class} tailscale_ping_rc=${rc}"
+    printf '%s\n' "$output" | sed 's/^/  /' >&2
+  fi
+  printf '%s\n' "$class"
+}
+
+# ---- Restart handling ------------------------------------------------------
+
+restart_tailscale_services() {
+  reason_peer="$1"
+  reason_count="$2"
+  failures=0
+
+  log_msg "Restarting Tailscale services after peer ${reason_peer} was relayed for ${reason_count} consecutive checks"
+
+  # Write the next-allowed restart timestamp before attempting the restart.
+  # Done regardless of whether the restart succeeds so that a failed restart
+  # does not leave multiple routers free to retry in lockstep.
+  # Cooldown persistence is best-effort: if the state file cannot be written
+  # (e.g. the state directory is missing and cannot be created), the restart
+  # proceeds anyway.  The failure is logged so the operator can investigate.
+  if ! mark_restart_attempt; then
+    log_msg "Warning: cooldown state could not be written; proceeding with restart anyway"
+  fi
+
+  for svc in $RESTART_SERVICES; do
+    output="$(service "$svc" restart 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      log_msg "Service restarted successfully: ${svc}"
     else
-      echo "No startup output captured; check system logs." >&2
+      failures=$((failures + 1))
+      log_msg "Service restart FAILED: ${svc}; rc=${rc}; output=${output}"
     fi
-    rm -f "$pidfile" "$start_log"
-    return 1
-  fi
-
-  rm -f "$start_log"
-  return 0
-}
-
-tailscale_watchdog_stop() {
-  if [ ! -f "$pidfile" ]; then
-    echo "${name} is not running"
-    return 0
-  fi
-
-  pid="$(cat "$pidfile" 2>/dev/null)"
-
-  if ! valid_pid "$pid"; then
-    # No valid process to stop; the postcondition (service not running) is
-    # already satisfied.  Remove the corrupt pidfile and return success so
-    # that restart can proceed to start without operator intervention.
-    echo "${name} pidfile contains invalid pid '${pid}'; removing ${pidfile}" >&2
-    rm -f "$pidfile"
-    return 0
-  fi
-
-  if ! kill -0 "$pid" 2>/dev/null; then
-    echo "${name} is not running; removing stale pidfile"
-    rm -f "$pidfile"
-    return 0
-  fi
-
-  echo "Stopping ${name}."
-  kill "$pid" 2>/dev/null
-
-  # Wait up to 10 seconds for graceful shutdown before escalating to SIGKILL.
-  # i is incremented at the top of each iteration so that the first kill -0
-  # check happens immediately (before any sleep), and SIGKILL is sent after
-  # 10 one-second sleeps have elapsed.
-  i=0
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$i" -ge 10 ]; then
-      echo "${name} did not stop cleanly after 10s; sending SIGKILL"
-      kill -KILL "$pid" 2>/dev/null
-
-      # Wait up to 5 more seconds for SIGKILL to take effect.  SIGKILL
-      # delivery is not instantaneous on a loaded system.  If the process
-      # survives all retries, leave the pidfile in place so a subsequent
-      # start does not launch a second instance against a still-running
-      # daemon, and return failure so the operator knows manual cleanup
-      # is required.
-      j=0
-      while kill -0 "$pid" 2>/dev/null; do
-        if [ "$j" -ge 5 ]; then
-          echo "${name}: process ${pid} did not die after SIGKILL; manual cleanup required" >&2
-          return 1
-        fi
-        j=$((j + 1))
-        sleep 1
-      done
-
-      break
-    fi
-    i=$((i + 1))
-    sleep 1
   done
 
-  rm -f "$pidfile"
-  return 0
-}
-
-tailscale_watchdog_restart() {
-  tailscale_watchdog_stop || return 1
-  tailscale_watchdog_start || return 1
-}
-
-tailscale_watchdog_status() {
-  if [ ! -f "$pidfile" ]; then
-    echo "${name} is not running"
-    return 1
-  fi
-
-  pid="$(cat "$pidfile" 2>/dev/null)"
-
-  if ! valid_pid "$pid"; then
-    echo "${name} pidfile contains invalid pid '${pid}'" >&2
-    return 1
-  fi
-
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "${name} is running as pid ${pid}"
+  if [ "$failures" -eq 0 ]; then
+    msg="Tailscale watchdog: restarted ${RESTART_SERVICES} after peer ${reason_peer} was relayed for ${reason_count} consecutive checks."
+    log_msg "$msg"
+    notify "$msg"
+    reset_all_peer_state_after_restart
     return 0
   fi
 
-  echo "${name} is not running, but pidfile exists"
+  msg="Tailscale watchdog: restart FAILED after peer ${reason_peer} was relayed for ${reason_count} consecutive checks."
+  log_msg "$msg"
+  notify "$msg"
   return 1
 }
 
-run_rc_command "$1"
+maybe_restart_for_peer() {
+  peer="$1"
+  count="$2"
+
+  if [ "$count" -lt "$FAIL_THRESHOLD" ]; then
+    return 0
+  fi
+
+  if [ "$TEST" -eq 1 ]; then
+    seen="$(get_peer_attr threshold_seen "$peer" none)"
+    if [ "$seen" != "test" ]; then
+      log_msg "TEST MODE: peer ${peer} reached ${count}/${FAIL_THRESHOLD} relayed checks; would restart ${RESTART_SERVICES}"
+      set_peer_attr threshold_seen "$peer" test
+    fi
+    return 0
+  fi
+
+  remaining="$(cooldown_remaining)"
+  if [ "$remaining" -gt 0 ]; then
+    seen="$(get_peer_attr threshold_seen "$peer" none)"
+    if [ "$seen" != "cooldown" ]; then
+      log_msg "Peer ${peer} reached ${count}/${FAIL_THRESHOLD} relayed checks, but restart is suppressed by cooldown for ${remaining} more seconds"
+      set_peer_attr threshold_seen "$peer" cooldown
+    fi
+    return 0
+  fi
+
+  restart_tailscale_services "$peer" "$count"
+  return $?
+}
+
+# ---- Per-peer state machine ------------------------------------------------
+
+handle_direct() {
+  peer="$1"
+  count="$(get_peer_attr count "$peer" 0)"
+  state="$(get_peer_attr state "$peer" unknown)"
+
+  case "$state" in
+    direct)
+      ;;
+    relayed|post_restart)
+      log_msg "Peer ${peer} is direct (was ${state}; relay counter was ${count})"
+      ;;
+    *)
+      log_msg "Peer ${peer} is direct (initial classification; was: ${state})"
+      ;;
+  esac
+
+  set_peer_attr count "$peer" 0
+  set_peer_attr state "$peer" direct
+  set_peer_attr threshold_seen "$peer" none
+}
+
+handle_relayed() {
+  peer="$1"
+  count="$(get_peer_attr count "$peer" 0)"
+  count=$((count + 1))
+  set_peer_attr count "$peer" "$count"
+  set_peer_attr state "$peer" relayed
+  log_msg "Peer ${peer} is relayed; consecutive relayed checks=${count}/${FAIL_THRESHOLD}"
+  maybe_restart_for_peer "$peer" "$count"
+}
+
+handle_unknown() {
+  peer="$1"
+  count="$(get_peer_attr count "$peer" 0)"
+  state="$(get_peer_attr state "$peer" unknown)"
+
+  if [ "$count" -gt 0 ]; then
+    log_msg "Peer ${peer} path is unknown; breaking relayed sequence and resetting counter from ${count}"
+  elif [ "$state" != "unknown" ]; then
+    log_msg "Peer ${peer} path is unknown (was ${state})"
+  fi
+
+  set_peer_attr count "$peer" 0
+  set_peer_attr state "$peer" unknown
+  set_peer_attr threshold_seen "$peer" none
+}
+
+check_peer() {
+  peer="$1"
+  class="$(check_peer_path "$peer")"
+  case "$class" in
+    direct)
+      handle_direct "$peer"
+      ;;
+    relayed)
+      handle_relayed "$peer"
+      ;;
+    *)
+      handle_unknown "$peer"
+      ;;
+  esac
+}
+
+check_all_peers() {
+  for peer in $PEERS; do
+    check_peer "$peer"
+  done
+}
+
+# ---- Signal handling -------------------------------------------------------
+
+handle_shutdown() {
+  log_msg "Daemon stopping"
+  if [ -n "$SLEEP_PID" ]; then
+    kill "$SLEEP_PID" 2>/dev/null
+    SLEEP_PID=""
+  fi
+  exit 0
+}
+
+# ---- Config path pre-scan --------------------------------------------------
+
+next_is_config=0
+for arg in "$@"; do
+  if [ "$next_is_config" -eq 1 ]; then
+    CONFIG_FILE="$arg"
+    next_is_config=0
+    continue
+  fi
+  case "$arg" in
+    -f)
+      next_is_config=1
+      ;;
+    -f*)
+      CONFIG_FILE="${arg#-f}"
+      ;;
+  esac
+done
+unset next_is_config arg
+
+load_config_file "$CONFIG_FILE"
+
+# ---- Option parsing --------------------------------------------------------
+OPTIND=1
+while getopts "t1df:i:n:c:h" opt; do
+  case "$opt" in
+    t)
+      TEST=1
+      ;;
+    1)
+      ONE_SHOT=1
+      ;;
+    d)
+      DEBUG=1
+      ;;
+    f)
+      CONFIG_FILE="$OPTARG"
+      ;;
+    i)
+      if ! is_positive_int "$OPTARG"; then
+        echo "Invalid interval: $OPTARG" >&2
+        usage
+        exit 2
+      fi
+      CHECK_INTERVAL="$OPTARG"
+      ;;
+    n)
+      if ! is_positive_int "$OPTARG"; then
+        echo "Invalid threshold: $OPTARG" >&2
+        usage
+        exit 2
+      fi
+      FAIL_THRESHOLD="$OPTARG"
+      ;;
+    c)
+      if ! is_positive_int "$OPTARG"; then
+        echo "Invalid ping count: $OPTARG" >&2
+        usage
+        exit 2
+      fi
+      PING_COUNT="$OPTARG"
+      ;;
+    h|*)
+      usage
+      exit 2
+      ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  usage
+  exit 2
+fi
+
+validate_config
+
+trap handle_shutdown INT TERM
+
+log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown_min=${RESTART_COOLDOWN_MIN}s cooldown_max=${RESTART_COOLDOWN_MAX}s test=${TEST}"
+
+if [ "$ONE_SHOT" -eq 1 ]; then
+  check_all_peers
+  exit 0
+fi
+
+while :; do
+  check_all_peers
+  sleep "$CHECK_INTERVAL" &
+  SLEEP_PID=$!
+  wait $SLEEP_PID
+  SLEEP_PID=""
+done
