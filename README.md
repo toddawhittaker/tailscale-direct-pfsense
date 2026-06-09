@@ -390,6 +390,22 @@ This tool attempts to recover from sustained relayed connectivity by restarting 
 
 Relay fallback can be caused by NAT behavior, firewall policy, ISP path changes, remote peer conditions, or Tailscale control-plane state. If relayed connectivity returns repeatedly, investigate the network path rather than relying only on restarts.
 
+## Development tests
+
+The test suite is shell-only and does not run installer, uninstaller, service restart, or Tailscale commands against the live system.
+
+Run syntax smoke tests:
+
+```sh
+make smoke
+```
+
+Run the full test suite:
+
+```sh
+make test
+```
+
 ## Development note
 
 This project was developed with AI assistance. The code and documentation were reviewed and edited by the project maintainer before publication.

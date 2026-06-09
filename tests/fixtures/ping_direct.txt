@@ -1,0 +1,2 @@
+pong from router1 (100.64.0.1) via 192.0.2.10:41641 in 12ms
+pong from router1 (100.64.0.1) via 192.0.2.10:41641 in 10ms

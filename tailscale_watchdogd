@@ -663,96 +663,102 @@ handle_shutdown() {
   exit 0
 }
 
-# ---- Config path pre-scan --------------------------------------------------
+main() {
+  # ---- Config path pre-scan ------------------------------------------------
 
-next_is_config=0
-for arg in "$@"; do
-  if [ "$next_is_config" -eq 1 ]; then
-    CONFIG_FILE="$arg"
-    next_is_config=0
-    continue
+  next_is_config=0
+  for arg in "$@"; do
+    if [ "$next_is_config" -eq 1 ]; then
+      CONFIG_FILE="$arg"
+      next_is_config=0
+      continue
+    fi
+    case "$arg" in
+      -f)
+        next_is_config=1
+        ;;
+      -f*)
+        CONFIG_FILE="${arg#-f}"
+        ;;
+    esac
+  done
+  unset next_is_config arg
+
+  load_config_file "$CONFIG_FILE"
+
+  # ---- Option parsing ------------------------------------------------------
+  OPTIND=1
+  while getopts "t1df:i:n:c:h" opt; do
+    case "$opt" in
+      t)
+        TEST=1
+        ;;
+      1)
+        ONE_SHOT=1
+        ;;
+      d)
+        DEBUG=1
+        ;;
+      f)
+        CONFIG_FILE="$OPTARG"
+        ;;
+      i)
+        if ! is_positive_int "$OPTARG"; then
+          echo "Invalid interval: $OPTARG" >&2
+          usage
+          exit 2
+        fi
+        CHECK_INTERVAL="$OPTARG"
+        ;;
+      n)
+        if ! is_positive_int "$OPTARG"; then
+          echo "Invalid threshold: $OPTARG" >&2
+          usage
+          exit 2
+        fi
+        FAIL_THRESHOLD="$OPTARG"
+        ;;
+      c)
+        if ! is_positive_int "$OPTARG"; then
+          echo "Invalid ping count: $OPTARG" >&2
+          usage
+          exit 2
+        fi
+        PING_COUNT="$OPTARG"
+        ;;
+      h|*)
+        usage
+        exit 2
+        ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  if [ "$#" -ne 0 ]; then
+    usage
+    exit 2
   fi
-  case "$arg" in
-    -f)
-      next_is_config=1
-      ;;
-    -f*)
-      CONFIG_FILE="${arg#-f}"
-      ;;
-  esac
-done
-unset next_is_config arg
 
-load_config_file "$CONFIG_FILE"
+  validate_config
 
-# ---- Option parsing --------------------------------------------------------
-OPTIND=1
-while getopts "t1df:i:n:c:h" opt; do
-  case "$opt" in
-    t)
-      TEST=1
-      ;;
-    1)
-      ONE_SHOT=1
-      ;;
-    d)
-      DEBUG=1
-      ;;
-    f)
-      CONFIG_FILE="$OPTARG"
-      ;;
-    i)
-      if ! is_positive_int "$OPTARG"; then
-        echo "Invalid interval: $OPTARG" >&2
-        usage
-        exit 2
-      fi
-      CHECK_INTERVAL="$OPTARG"
-      ;;
-    n)
-      if ! is_positive_int "$OPTARG"; then
-        echo "Invalid threshold: $OPTARG" >&2
-        usage
-        exit 2
-      fi
-      FAIL_THRESHOLD="$OPTARG"
-      ;;
-    c)
-      if ! is_positive_int "$OPTARG"; then
-        echo "Invalid ping count: $OPTARG" >&2
-        usage
-        exit 2
-      fi
-      PING_COUNT="$OPTARG"
-      ;;
-    h|*)
-      usage
-      exit 2
-      ;;
-  esac
-done
-shift $((OPTIND - 1))
+  trap handle_shutdown INT TERM
 
-if [ "$#" -ne 0 ]; then
-  usage
-  exit 2
+  log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown_min=${RESTART_COOLDOWN_MIN}s cooldown_max=${RESTART_COOLDOWN_MAX}s test=${TEST}"
+
+  if [ "$ONE_SHOT" -eq 1 ]; then
+    check_all_peers
+    exit 0
+  fi
+
+  while :; do
+    check_all_peers
+    sleep "$CHECK_INTERVAL" &
+    SLEEP_PID=$!
+    wait $SLEEP_PID
+    SLEEP_PID=""
+  done
+}
+
+if [ "${TAILSCALE_WATCHDOG_TESTING:-0}" != "1" ]; then
+  main "$@"
 fi
-
-validate_config
-
-trap handle_shutdown INT TERM
-
-log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown_min=${RESTART_COOLDOWN_MIN}s cooldown_max=${RESTART_COOLDOWN_MAX}s test=${TEST}"
-
-if [ "$ONE_SHOT" -eq 1 ]; then
-  check_all_peers
-  exit 0
-fi
-
-while :; do
-  check_all_peers
-  sleep "$CHECK_INTERVAL" &
-  SLEEP_PID=$!
-  wait $SLEEP_PID
-  SLEEP_PID=""
-done

@@ -1,202 +1,94 @@
 # AGENTS.md
 
-## Project overview
+## Scope
 
-This repository contains `tailscale-direct-pfsense`, a small pfSense/FreeBSD watchdog for Tailscale direct connectivity.
+`tailscale-direct-pfsense` is a small pfSense/FreeBSD watchdog for Tailscale direct connectivity.
 
-The project is intentionally simple:
-
-* POSIX-style `/bin/sh` scripts.
-* No compiled components.
-* No package manager.
-* No runtime dependencies beyond tools already expected on pfSense/FreeBSD plus Tailscale.
-* No GUI integration at this stage.
-* No systemd, Linux service manager, Python, Node, Go, or container runtime assumptions.
-
-Primary installed files:
+Primary repo files: `tailscale_watchdogd`, `tailscale_watchdog` rc.d wrapper, `tailscale_watchdog.conf.example`, `install.sh`, `uninstall.sh`, `README.md`, `LICENSE`.
 
 * `/usr/local/sbin/tailscale_watchdogd`
 * `/usr/local/etc/rc.d/tailscale_watchdog`
 * `/usr/local/etc/tailscale_watchdog.conf`
 * `/usr/local/etc/tailscale_watchdog.conf.example`
 
-Primary repository files:
+## Non-Negotiables
 
-* `tailscale_watchdogd` — foreground watchdog daemon.
-* `tailscale_watchdog` — pfSense/FreeBSD rc.d service wrapper.
-* `tailscale_watchdog.conf.example` — example configuration.
-* `install.sh` — installer.
-* `uninstall.sh` — uninstaller.
-* `README.md` — end-user documentation.
-* `LICENSE` — MIT license.
+* Keep the project shell-only, small, auditable, and pfSense/FreeBSD-oriented.
+* Target `/bin/sh`, FreeBSD userland, and rc.d; do not assume Bash, GNU coreutils, systemd, Linux service paths, package managers, compiled code, Python, Node, Go, containers, or GUI integration.
+* Runtime dependencies must stay limited to expected pfSense/FreeBSD tools plus Tailscale.
+* Do not introduce Bashisms: arrays, `[[ ... ]]`, process substitution, `${var//...}`, or `function name { ... }`.
+* Do not introduce GNU-specific options unless verified on FreeBSD/pfSense.
+* Use generic examples such as `router1 router2`; never include private peer names, auth keys, tokens, hostnames, local network names, or identifying logs.
 
-## Design goals
-
-Preserve these design goals unless explicitly asked to change them:
-
-* Keep the implementation small, auditable, and shell-only.
-* Prefer boring, defensive shell code over clever abstractions.
-* Optimize for pfSense/FreeBSD compatibility, not generic Linux.
-* Avoid unnecessary dependencies.
-* Avoid background state writes during healthy/direct operation.
-* Do not expose private peer names, auth keys, API tokens, or local network details in examples.
-* Use generic example peer names such as `router1 router2`.
-
-## Compatibility target
-
-The target runtime is pfSense on FreeBSD.
-
-Assume:
-
-* `/bin/sh`, not Bash.
-* FreeBSD userland, not GNU coreutils.
-* FreeBSD rc.d conventions, not systemd.
-* `service`, `sysrc`, `clog`, `jot`, `date`, `sed`, `grep`, `awk`, `mktemp`, `logger`, `curl`, and Tailscale commands may be present depending on the environment.
-* Some checks may be run from a Linux or WSL development machine, but final behavior must remain pfSense/FreeBSD-oriented.
-
-Do not introduce Bash-only syntax such as arrays, `[[ ... ]]`, process substitution, `${var//...}`, or `function name { ... }`.
-
-Do not introduce GNU-specific options unless they are verified to work on FreeBSD/pfSense.
-
-## Shell style
-
-Use conservative `/bin/sh`.
+## Shell Style
 
 Prefer:
 
-* Quoted variables.
-* Explicit error handling.
-* Small functions with single responsibilities.
-* `case` statements for validation.
-* `mktemp` for temporary files.
-* Atomic install/update patterns using a temporary file in the destination directory followed by `mv`.
-* Clear log messages through `logger`.
+* Quoted variables, explicit error handling, small functions, `case` validation.
+* `mktemp` for temp files.
+* Atomic installs/updates via temp file in destination directory plus `mv`.
+* `logger` for daemon/service logs.
+* PID files or command-specific mechanisms over parsing `ps`.
 
 Avoid:
 
-* Bashisms.
-* Linux-only paths.
-* Unquoted variables.
-* Parsing `ps` output when a safer PID-file or command-specific method exists.
-* Writing secrets or peer names into examples.
-* Persisting noisy per-check state.
+* Unquoted variables, Linux-only paths, noisy healthy-state writes, clever shell abstractions, and secrets in examples.
 
-## Security expectations
+## Security Rules
 
-This project touches router services. Be conservative.
+This touches router services; be conservative.
 
-Do not:
+Do not auto-enable/start service from the installer, run live install/uninstall/service/Tailscale restart commands without authorization, add telemetry, add network calls beyond documented downloads and optional Pushover, print secrets, make live config world-readable, store Pushover secrets outside live config, or replace live config without preserving it.
 
-* Auto-enable or auto-start the service from the installer unless explicitly requested.
-* Run `install.sh`, `uninstall.sh`, or service restart commands on a live router unless explicitly instructed.
-* Add telemetry.
-* Add automatic network calls other than documented installer downloads and optional Pushover notifications.
-* Store Pushover tokens or user keys in files other than the private live config.
-* Print secrets.
-* Make the live config world-readable.
-* Replace an existing live config without preserving it.
+Permissions: daemon, rc wrapper, installer, uninstaller are root-owned executables.
 
-Maintain these file permission expectations:
-
-* Daemon, wrapper, installer, uninstaller: root-owned executable files.
 * Live config: `root:wheel`, mode `0600`.
 * Example config: non-secret, readable.
-* Runtime state: under `/var/run/tailscale_watchdog`.
+* Runtime state: `/var/run/tailscale_watchdog`.
 
-## Watchdog behavior
+## Daemon Invariants
 
-The daemon monitors configured peers with `tailscale ping`.
+Preserve watchdog behavior:
 
-Important behavior to preserve:
+* Direct path is healthy.
+* Sustained DERP/relay-only paths count as failures.
+* Unknown/no usable path is not relayed and breaks the consecutive-relay sequence.
+* Restart configured Tailscale services only after `FAIL_THRESHOLD` consecutive relayed classifications for a peer.
+* Restart cooldown uses `RESTART_COOLDOWN_MIN` and `RESTART_COOLDOWN_MAX`.
+* Active cooldown state file: `/var/run/tailscale_watchdog/next_restart_allowed`.
+* Healthy/direct checks should not create or update runtime state files every check.
+* Successful restart resets peer relay counters.
+* Failed restart leaves counters intact so retry can happen after cooldown.
+* Signal handling should stop the loop promptly, including active sleep.
 
-* A direct path is healthy.
-* Sustained DERP/relay-only paths are counted as failures.
-* Unknown/no usable path does not count as relayed and should break the consecutive-relay sequence.
-* The daemon restarts configured Tailscale services only after `FAIL_THRESHOLD` consecutive relayed classifications for a peer.
-* Restart attempts use randomized cooldown settings:
+## rc.d Wrapper Invariants
 
-  * `RESTART_COOLDOWN_MIN`
-  * `RESTART_COOLDOWN_MAX`
-* The active cooldown state file is:
+Installed path: `/usr/local/etc/rc.d/tailscale_watchdog`.
 
-  * `/var/run/tailscale_watchdog/next_restart_allowed`
-* Healthy/direct operation should not create or update runtime state files every check.
-* After a successful restart, peer relay counters should reset.
-* If a restart attempt fails, relay counters should remain so the daemon may retry after cooldown rather than waiting for a full new threshold.
-* Signal handling should stop the loop promptly, including any active sleep.
+Preserve headers: `# PROVIDE: tailscale_watchdog`, `# REQUIRE: NETWORKING tailscaled pfsense_tailscaled`, `# KEYWORD: shutdown`.
 
-## rc.d wrapper behavior
+The wrapper must run the daemon in the background, maintain and validate a PID file, avoid stale PID hazards, stop with TERM before escalation, avoid passing debug mode through normal service flags, and fail visibly if startup fails.
 
-The service wrapper is installed as:
+## Installer / Uninstaller
 
-* `/usr/local/etc/rc.d/tailscale_watchdog`
+Installer must require root, verify pfSense/FreeBSD where practical, download over HTTPS only, syntax-check shell files before installing, install atomically, preserve any live config, install the example config, set secure ownership/permissions, avoid enabling/starting service automatically, and print clear next steps.
 
-It intentionally has no `.sh` extension.
+Uninstaller must require root, stop with `onestop` where appropriate, remove installed daemon/wrapper/example config, ask before deleting live config, preserve live config by default without a TTY, remove project runtime state including `next_restart_allowed` and old compatibility files, remove only this project’s rc.conf entries, and never uninstall Tailscale.
 
-Preserve these rc.d conventions:
+## Testing and Testable Code
 
-* `# PROVIDE: tailscale_watchdog`
-* `# REQUIRE: NETWORKING tailscaled pfsense_tailscaled`
-* `# KEYWORD: shutdown`
+Tests must be `/bin/sh`, shell-native, small, and side-effect safe. Do not introduce Bashisms, Python, Node, Go, containers, or heavyweight frameworks.
 
-The wrapper should:
+Use fixtures, temp directories, fake commands in temporary `PATH`, and static checks. Do not write outside the repo or `/tmp`.
 
-* Run the daemon in the background.
-* Maintain a PID file.
-* Validate PID files before sending signals.
-* Avoid stale PID-file hazards.
-* Stop cleanly with TERM, then escalate only when needed.
-* Avoid passing debug mode through normal service flags.
-* Fail visibly if startup fails.
-
-## Installer expectations
-
-The installer should:
-
-* Require root.
-* Verify pfSense/FreeBSD context where practical.
-* Download files over HTTPS only.
-* Syntax-check shell files before installing.
-* Install atomically.
-* Preserve any existing live config.
-* Install the example config.
-* Set secure ownership and permissions.
-* Not enable or start the service automatically.
-* Print clear next steps.
-
-## Uninstaller expectations
-
-The uninstaller should:
-
-* Require root.
-* Stop the service using `onestop` where appropriate.
-* Remove installed daemon, rc.d wrapper, and example config.
-* Ask before removing the live config.
-* Preserve live config by default if no TTY is available.
-* Remove runtime state files, including:
-
-  * `/var/run/tailscale_watchdog/next_restart_allowed`
-  * any old compatibility state files if present.
-* Remove only this project’s rc.conf entries.
-* Not uninstall Tailscale itself.
-
-## Validation commands
-
-Before proposing a code change as complete, run the checks that are safe in the current environment.
-
-Always run syntax checks when shell files change:
+Preferred commands:
 
 ```sh
-sh -n tailscale_watchdogd
-sh -n tailscale_watchdog
-sh -n tailscale_watchdog.conf.example
-sh -n install.sh
-sh -n uninstall.sh
+make smoke
+make test
 ```
 
-If `shellcheck` is available, it may be useful, but do not treat ShellCheck as authoritative for pfSense/FreeBSD behavior without review.
-
-Do not run these commands unless explicitly authorized because they may affect a live system:
+Tests must not run real live operations unless explicitly authorized:
 
 ```sh
 ./install.sh
@@ -207,70 +99,41 @@ service tailscale_watchdog restart
 service tailscale_watchdog onestop
 service tailscaled restart
 service pfsense_tailscaled restart
+tailscale ping
 ```
 
-## Documentation expectations
+When testing command behavior, fake `tailscale`, `service`, `logger`, `curl`, `date`, or similar tools in a temporary `PATH`.
 
-README changes should be end-user oriented.
+Write testable shell: pure parsing functions where practical, small side-effect wrappers, overridable paths/state files, and behavior-preserving test guards such as `TAILSCALE_WATCHDOG_TESTING=1`.
 
-Good README content:
+Add fixture tests for ping parsing changes, temp-file tests for cooldown/state changes, and static or fake-command tests for installer, uninstaller, and rc.d wrapper safety behavior.
 
-* What the project does.
-* Requirements.
-* Quick install.
-* Review-first install.
-* Configuration.
-* Testing before enabling.
-* Enable/start instructions.
-* Updating.
-* Uninstalling.
-* Security notes.
-* Troubleshooting.
-* AI assistance disclosure.
-* MIT license note.
+## Validation / Definition of Done
 
-Avoid turning the README into an internal audit trail.
+Before calling shell changes complete, run safe checks for changed areas.
 
-Do not include private peer names, real home network names, tokens, or logs with identifying hostnames. Use `router1 router2` for examples.
+Always run these when shell files change:
 
-## Release expectations
-
-For release work:
-
-* Keep version tags SemVer-style, such as `v1.0.0`.
-* Prefer annotated tags.
-* Ensure `git status` is clean before tagging.
-* Run all `sh -n` checks before release.
-* Release notes should describe user-facing changes.
-* A GitHub release does not need extra package assets unless explicitly requested.
-
-## Commit expectations
-
-Before committing:
-
-* Show the diff.
-* Explain the risk level.
-* State what was tested.
-* Keep commits focused.
-* Do not commit generated local logs, temp files, `.codex-log`, secrets, or local config files.
-
-Suggested `.gitignore` entries if needed:
-
-```gitignore
-.codex-log/
-*.tmp
-*.bak
-tailscale_watchdog.conf
+```sh
+sh -n tailscale_watchdogd
+sh -n tailscale_watchdog
+sh -n tailscale_watchdog.conf.example
+sh -n install.sh
+sh -n uninstall.sh
 ```
 
-## Interaction style
+Run `make smoke` / `make test` when tests exist or behavior changes. `shellcheck` may help, but do not treat it as authoritative for pfSense/FreeBSD.
 
-When working on this repo:
+Do not run live-effect commands listed above unless explicitly authorized.
 
-* Be direct and technical.
-* State assumptions.
-* Prefer small, reviewable changes.
-* Push back on changes that make router operations less safe.
-* If behavior differs between Linux and FreeBSD, call that out.
-* If a command was not run, say so explicitly.
-* If a change affects live router behavior, flag it clearly before proposing it.
+Before committing: show the diff, explain risk, state tests run, keep commits focused, and do not commit logs, temp files, `.codex-log`, secrets, or local configs such as `tailscale_watchdog.conf`.
+
+## Documentation / Release
+
+README changes should be end-user oriented: purpose, requirements, quick and review-first install, configuration, testing before enabling, enable/start, update, uninstall, security, troubleshooting, AI assistance disclosure, and MIT note. Do not turn README into an internal audit trail.
+
+For releases: use SemVer-style tags such as `v1.0.0`, prefer annotated tags, require clean `git status`, run all `sh -n` checks, and write user-facing release notes. Extra release assets are not required unless requested.
+
+## Interaction
+
+Be direct and technical. State assumptions, prefer small reviewable changes, push back on unsafe router operations, call out Linux vs FreeBSD differences, say when a command was not run, and flag live-router behavior changes clearly.

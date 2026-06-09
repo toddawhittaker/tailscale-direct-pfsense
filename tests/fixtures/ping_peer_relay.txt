@@ -1,0 +1,2 @@
+pong from router1 (100.64.0.1) via peer-relay(router2) in 44ms
+pong from router1 (100.64.0.1) via peer-relay(router2) in 42ms

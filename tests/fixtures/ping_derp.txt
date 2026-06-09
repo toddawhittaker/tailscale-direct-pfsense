@@ -1,0 +1,2 @@
+pong from router1 (100.64.0.1) via DERP(sea) in 34ms
+pong from router1 (100.64.0.1) via DERP(sea) in 33ms

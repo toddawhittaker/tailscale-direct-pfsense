@@ -1,0 +1,2 @@
+timeout waiting for pong from router1
+no usable path found
