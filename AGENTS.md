@@ -56,6 +56,7 @@ Preserve watchdog behavior:
 * Restart configured Tailscale services only after `FAIL_THRESHOLD` consecutive relayed classifications for a peer.
 * Restart cooldown uses `RESTART_COOLDOWN_MIN` and `RESTART_COOLDOWN_MAX`.
 * Active cooldown state file: `/var/run/tailscale_watchdog/next_restart_allowed`.
+* Restart deferral, when enabled, is global, bounded, and must not write cooldown state unless a restart is actually attempted.
 * Healthy/direct checks should not create or update runtime state files every check.
 * Successful restart resets peer relay counters.
 * Failed restart leaves counters intact so retry can happen after cooldown.

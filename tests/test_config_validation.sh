@@ -29,6 +29,11 @@ PING_COUNT=5
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=1800
 RESTART_SERVICES="tailscaled pfsense_tailscaled"
+RESTART_DEFERRAL_ENABLED=1
+RESTART_DEFERRAL_INTERFACE="tailscale0"
+RESTART_DEFERRAL_CHECK_SECONDS=30
+RESTART_DEFERRAL_MAX_BYTES=65536
+RESTART_DEFERRAL_MAX_ATTEMPTS=10
 CURL_TIMEOUT=10
 ${setup}
 validate_config
@@ -87,12 +92,36 @@ expect_invalid_config "sanitized peer collision fails" \
   'PEERS="router-a router.a"' \
   "collides with another peer"
 
-for _var in CHECK_INTERVAL FAIL_THRESHOLD PING_COUNT RESTART_COOLDOWN_MIN RESTART_COOLDOWN_MAX CURL_TIMEOUT; do
+for _var in CHECK_INTERVAL FAIL_THRESHOLD PING_COUNT RESTART_COOLDOWN_MIN RESTART_COOLDOWN_MAX CURL_TIMEOUT RESTART_DEFERRAL_CHECK_SECONDS RESTART_DEFERRAL_MAX_BYTES RESTART_DEFERRAL_MAX_ATTEMPTS; do
   for _value in 0 -1 abc; do
     expect_invalid_positive_int "$_var" "$_value"
   done
 done
 unset _var _value
+
+expect_invalid_config "restart deferral enabled rejects non-boolean" \
+  'RESTART_DEFERRAL_ENABLED=abc' \
+  "RESTART_DEFERRAL_ENABLED must be 0 or 1"
+
+expect_invalid_config "restart deferral interface empty fails" \
+  'RESTART_DEFERRAL_INTERFACE=""' \
+  "RESTART_DEFERRAL_INTERFACE must not be empty"
+
+expect_invalid_config "restart deferral interface semicolon fails" \
+  'RESTART_DEFERRAL_INTERFACE="tailscale0;reboot"' \
+  "Invalid restart deferral interface"
+
+expect_invalid_config "restart deferral interface path traversal fails" \
+  'RESTART_DEFERRAL_INTERFACE="../tailscale0"' \
+  "Invalid restart deferral interface"
+
+expect_invalid_config "restart deferral interface leading hyphen fails" \
+  'RESTART_DEFERRAL_INTERFACE="-tailscale0"' \
+  "Invalid restart deferral interface"
+
+expect_invalid_config "restart deferral interface glob fails" \
+  'RESTART_DEFERRAL_INTERFACE="*"' \
+  "Invalid restart deferral interface"
 
 expect_invalid_config "cooldown maximum below minimum fails" \
   'RESTART_COOLDOWN_MIN=1800; RESTART_COOLDOWN_MAX=900' \

@@ -60,6 +60,11 @@ PING_COUNT=5
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=2700
 RESTART_SERVICES="tailscaled pfsense_tailscaled"
+RESTART_DEFERRAL_ENABLED=1
+RESTART_DEFERRAL_INTERFACE="tailscale0"
+RESTART_DEFERRAL_CHECK_SECONDS=30
+RESTART_DEFERRAL_MAX_BYTES=65536
+RESTART_DEFERRAL_MAX_ATTEMPTS=10
 STATE_DIR="/var/run/tailscale_watchdog"
 # The state file stores the epoch timestamp at which the next restart attempt
 # is allowed.  It is written after every restart attempt (success or failure)
@@ -74,6 +79,7 @@ CURL_TIMEOUT=10
 TEST=0
 ONE_SHOT=0
 DEBUG=0
+RESTART_DEFERRAL_ATTEMPTS=0
 
 # Holds the PID of the background sleep process during the main loop so that
 # handle_shutdown can kill it promptly on SIGTERM/SIGINT.
@@ -102,6 +108,15 @@ is_positive_int() {
       ;;
   esac
   [ "$1" -gt 0 ] 2>/dev/null
+}
+
+is_bool() {
+  case "$1" in
+    0|1)
+      return 0
+      ;;
+  esac
+  return 1
 }
 
 # log_msg and debug_msg write exclusively to stderr (via logger and/or the
@@ -268,6 +283,32 @@ validate_config() {
     echo "CURL_TIMEOUT must be a positive integer: $CURL_TIMEOUT" >&2
     exit 2
   fi
+  if ! is_bool "$RESTART_DEFERRAL_ENABLED"; then
+    echo "RESTART_DEFERRAL_ENABLED must be 0 or 1: $RESTART_DEFERRAL_ENABLED" >&2
+    exit 2
+  fi
+  if [ -z "$RESTART_DEFERRAL_INTERFACE" ]; then
+    echo "RESTART_DEFERRAL_INTERFACE must not be empty" >&2
+    exit 2
+  fi
+  case "$RESTART_DEFERRAL_INTERFACE" in
+    -*|*[!A-Za-z0-9._-]*)
+      echo "Invalid restart deferral interface (contains shell-unsafe characters): ${RESTART_DEFERRAL_INTERFACE}" >&2
+      exit 2
+      ;;
+  esac
+  if ! is_positive_int "$RESTART_DEFERRAL_CHECK_SECONDS"; then
+    echo "RESTART_DEFERRAL_CHECK_SECONDS must be a positive integer: $RESTART_DEFERRAL_CHECK_SECONDS" >&2
+    exit 2
+  fi
+  if ! is_positive_int "$RESTART_DEFERRAL_MAX_BYTES"; then
+    echo "RESTART_DEFERRAL_MAX_BYTES must be a positive integer: $RESTART_DEFERRAL_MAX_BYTES" >&2
+    exit 2
+  fi
+  if ! is_positive_int "$RESTART_DEFERRAL_MAX_ATTEMPTS"; then
+    echo "RESTART_DEFERRAL_MAX_ATTEMPTS must be a positive integer: $RESTART_DEFERRAL_MAX_ATTEMPTS" >&2
+    exit 2
+  fi
   if [ -z "$RESTART_SERVICES" ]; then
     echo "RESTART_SERVICES must not be empty" >&2
     exit 2
@@ -346,7 +387,7 @@ get_peer_attr() {
   peer="$2"
   default="$3"
   var="$(peer_var "$attr" "$peer")"
-  eval "_gpa_tmp=\"\${${var}}\""
+  eval "_gpa_tmp=\"\${${var}:-}\""
   if [ -z "$_gpa_tmp" ]; then
     printf '%s\n' "$default"
   else
@@ -376,7 +417,35 @@ reset_all_peer_state_after_restart() {
   if [ "$_noglob_was_set" -eq 0 ]; then
     set +f
   fi
+  RESTART_DEFERRAL_ATTEMPTS=0
   unset _noglob_was_set
+}
+
+reset_restart_deferral_if_no_threshold() {
+  _noglob_was_set=0
+  case $- in
+    *f*) _noglob_was_set=1 ;;
+    *) set -f ;;
+  esac
+  for peer in $PEERS; do
+    count="$(get_peer_attr count "$peer" 0)"
+    if [ "$count" -ge "$FAIL_THRESHOLD" ]; then
+      if [ "$_noglob_was_set" -eq 0 ]; then
+        set +f
+      fi
+      unset _noglob_was_set
+      return 0
+    fi
+  done
+  if [ "$_noglob_was_set" -eq 0 ]; then
+    set +f
+  fi
+  unset _noglob_was_set
+
+  if [ "$RESTART_DEFERRAL_ATTEMPTS" -gt 0 ]; then
+    log_msg "Restart deferral state reset: no peer remains at the relay threshold"
+  fi
+  RESTART_DEFERRAL_ATTEMPTS=0
 }
 
 # ---- Restart cooldown state ------------------------------------------------
@@ -485,6 +554,115 @@ cooldown_remaining() {
   fi
 
   printf '%s\n' "$remaining"
+}
+
+# ---- Restart deferral ------------------------------------------------------
+#
+# The restart impact is global to local Tailscale connectivity, so the first
+# deferral implementation samples interface-wide byte counters rather than
+# only checking the peer that happened to reach the relay threshold.
+
+watchdog_sleep() {
+  seconds="$1"
+  sleep "$seconds" &
+  SLEEP_PID=$!
+  wait "$SLEEP_PID"
+  rc=$?
+  SLEEP_PID=""
+  return "$rc"
+}
+
+parse_interface_bytes() {
+  iface="$1"
+
+  awk -v iface="$iface" '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "Ibytes") {
+          ibytes = i
+        } else if ($i == "Obytes") {
+          obytes = i
+        }
+      }
+      next
+    }
+    $1 == iface {
+      if (ibytes == 0 || obytes == 0) {
+        exit 2
+      }
+      if ($ibytes !~ /^[0-9]+$/ || $obytes !~ /^[0-9]+$/) {
+        exit 2
+      }
+      total += $ibytes + $obytes
+      found = 1
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+      printf "%.0f\n", total
+    }
+  '
+}
+
+get_interface_bytes() {
+  iface="$1"
+
+  if ! command -v netstat >/dev/null 2>&1; then
+    return 1
+  fi
+
+  output="$(netstat -ibn -I "$iface" 2>/dev/null)" || return 1
+  printf '%s\n' "$output" | parse_interface_bytes "$iface"
+}
+
+should_defer_restart() {
+  reason_peer="$1"
+  reason_count="$2"
+
+  if [ "$RESTART_DEFERRAL_ENABLED" -ne 1 ]; then
+    return 1
+  fi
+
+  if [ "$RESTART_DEFERRAL_ATTEMPTS" -ge "$RESTART_DEFERRAL_MAX_ATTEMPTS" ]; then
+    log_msg "Restart deferral limit reached (${RESTART_DEFERRAL_ATTEMPTS}/${RESTART_DEFERRAL_MAX_ATTEMPTS}); proceeding with restart"
+    return 1
+  fi
+
+  first="$(get_interface_bytes "$RESTART_DEFERRAL_INTERFACE")"
+  if [ "$?" -ne 0 ]; then
+    log_msg "Restart deferral activity check failed for interface ${RESTART_DEFERRAL_INTERFACE}; proceeding without deferral"
+    return 1
+  fi
+
+  if ! watchdog_sleep "$RESTART_DEFERRAL_CHECK_SECONDS"; then
+    log_msg "Restart deferral sleep interrupted; proceeding without deferral"
+    return 1
+  fi
+
+  second="$(get_interface_bytes "$RESTART_DEFERRAL_INTERFACE")"
+  if [ "$?" -ne 0 ]; then
+    log_msg "Restart deferral activity check failed for interface ${RESTART_DEFERRAL_INTERFACE}; proceeding without deferral"
+    return 1
+  fi
+
+  delta=$(( second - first ))
+  if [ "$delta" -lt 0 ]; then
+    log_msg "Restart deferral activity check failed: byte counter moved backward on ${RESTART_DEFERRAL_INTERFACE}; proceeding without deferral"
+    return 1
+  fi
+
+  if [ "$delta" -le "$RESTART_DEFERRAL_MAX_BYTES" ]; then
+    if [ "$RESTART_DEFERRAL_ATTEMPTS" -gt 0 ]; then
+      log_msg "Restart deferral ended: interface ${RESTART_DEFERRAL_INTERFACE} is quiet (${delta} bytes over ${RESTART_DEFERRAL_CHECK_SECONDS}s)"
+    fi
+    RESTART_DEFERRAL_ATTEMPTS=0
+    return 1
+  fi
+
+  RESTART_DEFERRAL_ATTEMPTS=$((RESTART_DEFERRAL_ATTEMPTS + 1))
+  log_msg "Restart deferred (${RESTART_DEFERRAL_ATTEMPTS}/${RESTART_DEFERRAL_MAX_ATTEMPTS}): interface ${RESTART_DEFERRAL_INTERFACE} saw ${delta} bytes over ${RESTART_DEFERRAL_CHECK_SECONDS}s after peer ${reason_peer} reached ${reason_count}/${FAIL_THRESHOLD} relayed checks"
+  return 0
 }
 
 mark_restart_attempt() {
@@ -670,6 +848,11 @@ maybe_restart_for_peer() {
     return 0
   fi
 
+  if should_defer_restart "$peer" "$count"; then
+    set_peer_attr threshold_seen "$peer" deferral
+    return 0
+  fi
+
   restart_tailscale_services "$peer" "$count"
   return $?
 }
@@ -695,6 +878,7 @@ handle_direct() {
   set_peer_attr count "$peer" 0
   set_peer_attr state "$peer" direct
   set_peer_attr threshold_seen "$peer" none
+  reset_restart_deferral_if_no_threshold
 }
 
 handle_relayed() {
@@ -721,6 +905,7 @@ handle_unknown() {
   set_peer_attr count "$peer" 0
   set_peer_attr state "$peer" unknown
   set_peer_attr threshold_seen "$peer" none
+  reset_restart_deferral_if_no_threshold
 }
 
 check_peer() {
@@ -845,7 +1030,7 @@ main() {
 
   trap handle_shutdown INT TERM
 
-  log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown_min=${RESTART_COOLDOWN_MIN}s cooldown_max=${RESTART_COOLDOWN_MAX}s test=${TEST}"
+  log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown_min=${RESTART_COOLDOWN_MIN}s cooldown_max=${RESTART_COOLDOWN_MAX}s restart_deferral_enabled=${RESTART_DEFERRAL_ENABLED} restart_deferral_interface=${RESTART_DEFERRAL_INTERFACE} test=${TEST}"
 
   if [ "$ONE_SHOT" -eq 1 ]; then
     check_all_peers
@@ -854,10 +1039,7 @@ main() {
 
   while :; do
     check_all_peers
-    sleep "$CHECK_INTERVAL" &
-    SLEEP_PID=$!
-    wait $SLEEP_PID
-    SLEEP_PID=""
+    watchdog_sleep "$CHECK_INTERVAL"
   done
 }
 

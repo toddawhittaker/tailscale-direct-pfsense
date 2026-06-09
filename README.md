@@ -94,6 +94,13 @@ PING_COUNT=5
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=1800
 
+# Delay a restart while local Tailscale interface traffic appears active.
+RESTART_DEFERRAL_ENABLED=1
+RESTART_DEFERRAL_INTERFACE="tailscale0"
+RESTART_DEFERRAL_CHECK_SECONDS=30
+RESTART_DEFERRAL_MAX_BYTES=65536
+RESTART_DEFERRAL_MAX_ATTEMPTS=10
+
 # Services restarted when the threshold is reached.
 RESTART_SERVICES="tailscaled pfsense_tailscaled"
 
@@ -133,6 +140,16 @@ If you want a fixed cooldown, set both values to the same number:
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=900
 ```
+
+### Restart deferral
+
+By default, the watchdog checks whether the configured Tailscale interface appears quiet before restarting services. This check runs only after a peer reaches `FAIL_THRESHOLD` and the randomized cooldown allows another restart attempt.
+
+The deferral scope is interface-wide, not per peer. That is intentional because restarting local Tailscale services can interrupt all Tailscale traffic on the router, including traffic unrelated to the peer that triggered the threshold.
+
+The watchdog samples total received and sent bytes on `RESTART_DEFERRAL_INTERFACE` for `RESTART_DEFERRAL_CHECK_SECONDS`. If the byte delta is greater than `RESTART_DEFERRAL_MAX_BYTES`, it defers the restart and tries again on a later check. Deferrals are bounded by `RESTART_DEFERRAL_MAX_ATTEMPTS`; after that, the watchdog proceeds with the restart.
+
+A deferred restart does not consume the randomized restart cooldown. The cooldown is written only immediately before an actual restart attempt. If interface activity detection is unavailable or returns unexpected output, the watchdog logs the problem and proceeds with the restart decision.
 
 ## Test before enabling
 
