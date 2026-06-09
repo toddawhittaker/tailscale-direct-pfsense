@@ -217,6 +217,10 @@ validate_config() {
   esac
   for _vpeer in $PEERS; do
     case "$_vpeer" in
+      -*)
+        echo "Invalid peer name (contains shell-unsafe characters): ${_vpeer}" >&2
+        exit 2
+        ;;
       *[!A-Za-z0-9._-]*)
         echo "Invalid peer name (contains shell-unsafe characters): ${_vpeer}" >&2
         exit 2
@@ -275,6 +279,10 @@ validate_config() {
   esac
   for _vsvc in $RESTART_SERVICES; do
     case "$_vsvc" in
+      -*)
+        echo "Invalid service name (contains shell-unsafe characters): ${_vsvc}" >&2
+        exit 2
+        ;;
       *[!A-Za-z0-9._-]*)
         echo "Invalid service name (contains shell-unsafe characters): ${_vsvc}" >&2
         exit 2
@@ -596,7 +604,10 @@ restart_tailscale_services() {
   # Write the next-allowed restart timestamp before attempting the restart.
   # Done regardless of whether the restart succeeds so that a failed restart
   # does not leave multiple routers free to retry in lockstep.
-  mark_restart_attempt
+  if ! mark_restart_attempt; then
+    log_msg "Restart suppressed: could not write restart cooldown state"
+    return 1
+  fi
 
   _noglob_was_set=0
   case $- in

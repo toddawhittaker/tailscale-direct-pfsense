@@ -18,7 +18,19 @@ smoke:
 	@sh $(SMOKE_TESTS)
 
 test:
-	@for test_script in $(TESTS); do \
+	@total=0; passed=0; failed=0; \
+	for test_script in $(TESTS); do \
+		total=$$((total + 1)); \
 		echo "==> $$test_script"; \
-		sh "$$test_script" || exit 1; \
-	done
+		if sh "$$test_script"; then \
+			passed=$$((passed + 1)); \
+		else \
+			failed=$$((failed + 1)); \
+		fi; \
+	done; \
+	if [ "$$failed" -eq 0 ]; then \
+		echo "# PASS: $$total test scripts, $$passed passed, $$failed failed"; \
+	else \
+		echo "# FAIL: $$total test scripts, $$passed passed, $$failed failed"; \
+		exit 1; \
+	fi

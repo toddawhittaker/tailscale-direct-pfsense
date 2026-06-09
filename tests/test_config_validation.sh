@@ -42,18 +42,68 @@ EOF
   fi
 }
 
+expect_invalid_config() {
+  desc="$1"
+  setup="$2"
+  expected_msg="$3"
+
+  run_validate "$desc" 2 "$setup" "$expected_msg"
+}
+
+expect_invalid_peer() {
+  desc="$1"
+  setup="$2"
+
+  expect_invalid_config "$desc" "$setup" "Invalid peer name"
+}
+
+expect_invalid_service() {
+  desc="$1"
+  setup="$2"
+
+  expect_invalid_config "$desc" "$setup" "Invalid service name"
+}
+
+expect_invalid_positive_int() {
+  var="$1"
+  value="$2"
+
+  expect_invalid_config \
+    "${var} rejects ${value}" \
+    "${var}=\"${value}\"" \
+    "${var} must be a positive integer"
+}
+
 run_validate "valid config passes" 0 "" ""
-run_validate "empty peers fail" 2 'PEERS=""' "PEERS must not be empty"
-run_validate "invalid peer characters fail" 2 'PEERS="router1 bad;peer"' "Invalid peer name"
-run_validate "peer glob fails" 2 'PEERS="router1 *"' "Invalid peer name"
-run_validate "sanitized peer collision fails" 2 'PEERS="router-a router.a"' "collides with another peer"
-run_validate "non-numeric check interval fails" 2 'CHECK_INTERVAL="x"' "CHECK_INTERVAL must be a positive integer"
-run_validate "zero fail threshold fails" 2 'FAIL_THRESHOLD=0' "FAIL_THRESHOLD must be a positive integer"
-run_validate "bad ping count fails" 2 'PING_COUNT="-1"' "PING_COUNT must be a positive integer"
-run_validate "bad cooldown minimum fails" 2 'RESTART_COOLDOWN_MIN=abc' "RESTART_COOLDOWN_MIN must be a positive integer"
-run_validate "bad cooldown maximum fails" 2 'RESTART_COOLDOWN_MAX=abc' "RESTART_COOLDOWN_MAX must be a positive integer"
-run_validate "cooldown maximum below minimum fails" 2 'RESTART_COOLDOWN_MIN=1800; RESTART_COOLDOWN_MAX=900' "must be >= RESTART_COOLDOWN_MIN"
-run_validate "bad curl timeout fails" 2 'CURL_TIMEOUT=0' "CURL_TIMEOUT must be a positive integer"
-run_validate "empty restart services fails" 2 'RESTART_SERVICES=""' "RESTART_SERVICES must not be empty"
-run_validate "restart service glob fails" 2 'RESTART_SERVICES="tailscaled *"' "Invalid service name"
-run_validate "restart service shell metacharacter fails" 2 'RESTART_SERVICES="tailscaled bad;svc"' "Invalid service name"
+expect_invalid_config "empty peers fail" 'PEERS=""' "PEERS must not be empty"
+
+expect_invalid_peer "peer semicolon fails" 'PEERS="router1 bad;peer"'
+expect_invalid_peer "peer command-substitution-shaped value fails" "PEERS='router1 \$(id)'"
+expect_invalid_peer "peer path traversal fails" 'PEERS="router1 ../router"'
+expect_invalid_peer "peer leading hyphen fails" 'PEERS="router1 -badpeer"'
+expect_invalid_peer "peer glob fails" 'PEERS="router1 *"'
+
+expect_invalid_config "sanitized peer collision fails" \
+  'PEERS="router-a router.a"' \
+  "collides with another peer"
+
+for _var in CHECK_INTERVAL FAIL_THRESHOLD PING_COUNT RESTART_COOLDOWN_MIN RESTART_COOLDOWN_MAX CURL_TIMEOUT; do
+  for _value in 0 -1 abc; do
+    expect_invalid_positive_int "$_var" "$_value"
+  done
+done
+unset _var _value
+
+expect_invalid_config "cooldown maximum below minimum fails" \
+  'RESTART_COOLDOWN_MIN=1800; RESTART_COOLDOWN_MAX=900' \
+  "must be >= RESTART_COOLDOWN_MIN"
+
+expect_invalid_config "empty restart services fails" \
+  'RESTART_SERVICES=""' \
+  "RESTART_SERVICES must not be empty"
+
+expect_invalid_service "restart service semicolon fails" 'RESTART_SERVICES="tailscaled bad;svc"'
+expect_invalid_service "restart service command-substitution-shaped value fails" "RESTART_SERVICES='tailscaled \$(id)'"
+expect_invalid_service "restart service path traversal fails" 'RESTART_SERVICES="tailscaled ../service"'
+expect_invalid_service "restart service leading hyphen fails" 'RESTART_SERVICES="tailscaled -badservice"'
+expect_invalid_service "restart service glob fails" 'RESTART_SERVICES="tailscaled *"'

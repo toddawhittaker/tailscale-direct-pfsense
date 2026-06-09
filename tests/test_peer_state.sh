@@ -35,13 +35,20 @@ printf '%s %s\n' "$1" "$2" >> "$SERVICE_LOG"
 exit 0
 EOF
 
+cat > "${fakebin}/curl" <<'EOF'
+#!/bin/sh
+printf 'curl called\n' >> "$CURL_LOG"
+exit 0
+EOF
+
 cat > "${fakebin}/tailscale" <<'EOF'
 #!/bin/sh
 cat "$FAKE_TAILSCALE_OUTPUT"
 exit "${FAKE_TAILSCALE_RC:-0}"
 EOF
 
-chmod 755 "${fakebin}/logger" "${fakebin}/date" "${fakebin}/service" "${fakebin}/tailscale"
+chmod 755 "${fakebin}/logger" "${fakebin}/date" "${fakebin}/service" \
+  "${fakebin}/curl" "${fakebin}/tailscale"
 
 PATH="${fakebin}:/usr/bin:/bin"
 export PATH
@@ -55,9 +62,12 @@ RESTART_COOLDOWN_MAX=900
 STATE_DIR="${tmpdir}/state"
 NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 SERVICE_LOG="${tmpdir}/service.log"
-export SERVICE_LOG
+CURL_LOG="${tmpdir}/curl.log"
+export SERVICE_LOG CURL_LOG
 TEST=1
 DEBUG=0
+PUSHOVER_TOKEN=""
+PUSHOVER_USER=""
 
 set_peer_attr count router1 0
 set_peer_attr state router1 unknown
@@ -87,6 +97,8 @@ assert_eq "unknown clears threshold marker" "none" "$(get_peer_attr threshold_se
 TEST=0
 mkdir -p "$STATE_DIR" || exit 1
 printf '%s\n' 100500 > "$NEXT_RESTART_FILE"
+PUSHOVER_TOKEN="test-token"
+PUSHOVER_USER="test-user"
 set_peer_attr count router2 1
 set_peer_attr state router2 relayed
 set_peer_attr threshold_seen router2 none
@@ -94,6 +106,33 @@ handle_relayed router2
 assert_eq "cooldown threshold keeps counter" "2" "$(get_peer_attr count router2 unset)"
 assert_eq "cooldown threshold marker is recorded" "cooldown" "$(get_peer_attr threshold_seen router2 unset)"
 assert_eq "cooldown suppresses service call" "missing" "$([ -f "$SERVICE_LOG" ] && cat "$SERVICE_LOG" || printf 'missing')"
+assert_eq "cooldown suppresses Pushover notification" \
+  "missing" "$([ -f "$CURL_LOG" ] && cat "$CURL_LOG" || printf 'missing')"
+
+PUSHOVER_TOKEN=""
+PUSHOVER_USER=""
+rm -rf "$STATE_DIR"
+SERVICE_LOG="${tmpdir}/service-global-first.log"
+export SERVICE_LOG
+set_peer_attr count router1 1
+set_peer_attr state router1 relayed
+set_peer_attr threshold_seen router1 none
+handle_relayed router1
+service_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
+assert_contains "first peer threshold restarts service" \
+  "$service_log" "tailscaled restart"
+assert_file_exists "first peer restart writes global cooldown" "$NEXT_RESTART_FILE"
+
+SERVICE_LOG="${tmpdir}/service-global-second.log"
+export SERVICE_LOG
+set_peer_attr count router2 1
+set_peer_attr state router2 relayed
+set_peer_attr threshold_seen router2 none
+handle_relayed router2
+assert_eq "global cooldown suppresses second peer back-to-back restart" \
+  "missing" "$([ -f "$SERVICE_LOG" ] && cat "$SERVICE_LOG" || printf 'missing')"
+assert_eq "second peer records cooldown suppression" \
+  "cooldown" "$(get_peer_attr threshold_seen router2 unset)"
 
 FAKE_TAILSCALE_OUTPUT="${SCRIPT_DIR}/fixtures/ping_mixed_direct.txt"
 FAKE_TAILSCALE_RC=1

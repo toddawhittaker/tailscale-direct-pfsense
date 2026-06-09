@@ -41,6 +41,10 @@ EOF
 
 cat > "${fakebin}/service" <<'EOF'
 #!/bin/sh
+if [ "${REQUIRE_COOLDOWN_BEFORE_SERVICE:-0}" -eq 1 ] && [ ! -f "$NEXT_RESTART_FILE" ]; then
+  printf 'missing cooldown before service\n' >> "$SERVICE_LOG"
+  exit 2
+fi
 printf '%s %s\n' "$1" "$2" >> "$SERVICE_LOG"
 case "$SERVICE_FAIL" in
   1)
@@ -58,10 +62,12 @@ export PATH
 
 SERVICE_LOG="${tmpdir}/service.log"
 SERVICE_FAIL=0
-export SERVICE_LOG SERVICE_FAIL
+REQUIRE_COOLDOWN_BEFORE_SERVICE=1
+export SERVICE_LOG SERVICE_FAIL REQUIRE_COOLDOWN_BEFORE_SERVICE
 
 STATE_DIR="${tmpdir}/state"
 NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
+export NEXT_RESTART_FILE
 PEERS="router1 router2"
 RESTART_SERVICES="tailscaled pfsense_tailscaled"
 RESTART_COOLDOWN_MIN=900
@@ -91,6 +97,8 @@ assert_file_exists "restart writes cooldown state" "$NEXT_RESTART_FILE"
 service_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
 assert_contains "restart flow restarts tailscaled" "$service_log" "tailscaled restart"
 assert_contains "restart flow restarts pfsense_tailscaled" "$service_log" "pfsense_tailscaled restart"
+assert_not_contains "service was not called before cooldown write" \
+  "$service_log" "missing cooldown before service"
 
 SERVICE_FAIL=1
 export SERVICE_FAIL
@@ -109,3 +117,16 @@ assert_eq "failed restart preserves router1 counter" \
   "5" "$(get_peer_attr count router1 unset)"
 assert_eq "failed restart preserves router2 counter" \
   "3" "$(get_peer_attr count router2 unset)"
+
+SERVICE_FAIL=0
+export SERVICE_FAIL
+SERVICE_LOG="${tmpdir}/cooldown-write-fail.log"
+export SERVICE_LOG
+rm -rf "$STATE_DIR"
+ln -s "${tmpdir}/elsewhere" "$STATE_DIR"
+
+restart_tailscale_services router1 5 >/dev/null 2>&1
+rc=$?
+assert_eq "cooldown write failure blocks restart flow" "1" "$rc"
+assert_eq "cooldown write failure does not call service" \
+  "missing" "$([ -f "$SERVICE_LOG" ] && cat "$SERVICE_LOG" || printf 'missing')"
