@@ -43,6 +43,12 @@ assert_contains "installer restricts curl protocol to HTTPS" \
 assert_contains "installer restricts curl redirects to HTTPS" \
   "$install_text" "--proto-redir '=https'"
 
+assert_not_contains "installer does not disable TLS verification" \
+  "$active_text" " --insecure"
+
+assert_not_contains "installer does not use curl -k" \
+  "$install_text" "curl -k"
+
 assert_not_contains "installer does not start watchdog service" \
   "$active_text" "service tailscale_watchdog start"
 
@@ -58,6 +64,12 @@ assert_not_contains "installer does not write enable line" \
 assert_contains "installer tracks preexisting live config" \
   "$install_text" "LIVE_CONFIG_PREEXISTED=1"
 
+assert_contains "installer rejects live config symlink" \
+  "$install_text" 'if [ -L "$CONF_DST_LIVE" ]; then'
+
+assert_contains "installer rejects non-regular live config path" \
+  "$install_text" 'if [ -e "$CONF_DST_LIVE" ] && [ ! -f "$CONF_DST_LIVE" ]; then'
+
 assert_contains "installer preserves existing live config branch" \
   "$install_text" "Existing live config preserved"
 
@@ -66,3 +78,21 @@ assert_contains "installer creates live config only when missing" \
 
 assert_contains "installer installs live config in missing-config branch" \
   "$install_text" '"$CONF_DST_LIVE"'
+
+assert_contains "installer validates daemon syntax" \
+  "$install_text" 'validate_shell_syntax "${STAGE_DIR}/${DAEMON_SRC}" "daemon"'
+
+assert_contains "installer validates rc wrapper syntax" \
+  "$install_text" 'validate_shell_syntax "${STAGE_DIR}/${RC_SRC}"     "rc wrapper"'
+
+assert_contains "installer validates config example syntax" \
+  "$install_text" 'validate_shell_syntax "${STAGE_DIR}/${CONF_SRC}"   "config example (sourced as shell)"'
+
+assert_contains "installer creates temp file beside destination" \
+  "$install_text" 'tmp_dst="$(mktemp "${dst_dir}/.${dst_base}.install.XXXXXX")"'
+
+assert_contains "installer atomically moves temp file into place" \
+  "$install_text" 'mv -f "$tmp_dst" "$dst"'
+
+assert_contains "installer checks service status but does not restart it" \
+  "$install_text" 'service tailscale_watchdog status'
