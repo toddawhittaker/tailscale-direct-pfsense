@@ -45,6 +45,7 @@ EOF
 run_validate "valid config passes" 0 "" ""
 run_validate "empty peers fail" 2 'PEERS=""' "PEERS must not be empty"
 run_validate "invalid peer characters fail" 2 'PEERS="router1 bad;peer"' "Invalid peer name"
+run_validate "peer glob fails" 2 'PEERS="router1 *"' "Invalid peer name"
 run_validate "sanitized peer collision fails" 2 'PEERS="router-a router.a"' "collides with another peer"
 run_validate "non-numeric check interval fails" 2 'CHECK_INTERVAL="x"' "CHECK_INTERVAL must be a positive integer"
 run_validate "zero fail threshold fails" 2 'FAIL_THRESHOLD=0' "FAIL_THRESHOLD must be a positive integer"
@@ -54,3 +55,5 @@ run_validate "bad cooldown maximum fails" 2 'RESTART_COOLDOWN_MAX=abc' "RESTART_
 run_validate "cooldown maximum below minimum fails" 2 'RESTART_COOLDOWN_MIN=1800; RESTART_COOLDOWN_MAX=900' "must be >= RESTART_COOLDOWN_MIN"
 run_validate "bad curl timeout fails" 2 'CURL_TIMEOUT=0' "CURL_TIMEOUT must be a positive integer"
 run_validate "empty restart services fails" 2 'RESTART_SERVICES=""' "RESTART_SERVICES must not be empty"
+run_validate "restart service glob fails" 2 'RESTART_SERVICES="tailscaled *"' "Invalid service name"
+run_validate "restart service shell metacharacter fails" 2 'RESTART_SERVICES="tailscaled bad;svc"' "Invalid service name"

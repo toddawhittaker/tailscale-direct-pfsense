@@ -106,7 +106,8 @@ RC_MODE="0755"
 CONF_SRC="tailscale_watchdog.conf.example"
 CONF_DST_EXAMPLE="/usr/local/etc/tailscale_watchdog.conf.example"
 CONF_DST_LIVE="/usr/local/etc/tailscale_watchdog.conf"
-CONF_MODE="0600"
+CONF_EXAMPLE_MODE="0644"
+CONF_LIVE_MODE="0600"
 
 # rc.conf.local is one common place for rc.conf-style settings on pfSense.
 # Verify that this path persists across upgrades for your pfSense workflow.
@@ -487,7 +488,7 @@ install_files() {
   install_file \
     "${STAGE_DIR}/${CONF_SRC}" \
     "$CONF_DST_EXAMPLE" \
-    "$CONF_MODE"
+    "$CONF_EXAMPLE_MODE"
 
   if [ "$LIVE_CONFIG_PREEXISTED" -eq 1 ]; then
     # Preserve the operator's config but enforce safe ownership and
@@ -497,16 +498,16 @@ install_files() {
     # contents are not modified.
     chown root:wheel "$CONF_DST_LIVE" \
       || die "Failed to set ownership root:wheel on existing live config: ${CONF_DST_LIVE}"
-    chmod "$CONF_MODE" "$CONF_DST_LIVE" \
-      || die "Failed to set permissions ${CONF_MODE} on existing live config: ${CONF_DST_LIVE}"
+    chmod "$CONF_LIVE_MODE" "$CONF_DST_LIVE" \
+      || die "Failed to set permissions ${CONF_LIVE_MODE} on existing live config: ${CONF_DST_LIVE}"
     ok "Existing live config preserved and permissions enforced: ${CONF_DST_LIVE}"
-    info "Compare with the updated example to check for new options:"
-    info "  diff ${CONF_DST_LIVE} ${CONF_DST_EXAMPLE}"
+    info "Review the updated example config for new options:"
+    info "  less ${CONF_DST_EXAMPLE}"
   else
     install_file \
       "${STAGE_DIR}/${CONF_SRC}" \
       "$CONF_DST_LIVE" \
-      "$CONF_MODE"
+      "$CONF_LIVE_MODE"
     info "A starter config was installed at ${CONF_DST_LIVE}."
     info "Edit it before enabling the service."
   fi
@@ -570,8 +571,8 @@ EOF
 Your existing live config was preserved and permissions were enforced:
   ${CONF_DST_LIVE}
 
-Compare it with the updated example to check for new options:
-  diff ${CONF_DST_LIVE} ${CONF_DST_EXAMPLE}
+Review the updated example config for new options:
+  less ${CONF_DST_EXAMPLE}
 
 EOF
   else

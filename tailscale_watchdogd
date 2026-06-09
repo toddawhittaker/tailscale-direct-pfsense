@@ -24,9 +24,8 @@
 #   - The config file must be owned by root and not readable, writable, or
 #     executable by group or world (mode 0600 recommended).  Permissions are
 #     verified with stat(1) before sourcing.
-#   - Pushover credentials are passed as curl --form-string arguments, which
-#     means they are briefly visible in the process table.  On pfSense, process
-#     table access is restricted to root, so the practical risk is low.
+#   - Pushover credentials are passed to curl through a config stream on stdin,
+#     not as process arguments.
 #   - Peer names are validated to contain only hostname-safe characters before
 #     being passed to tailscale ping, and checked for post-sanitization
 #     collisions that would cause two peers to share the same state counter.
@@ -41,7 +40,7 @@ TAG="tailscale_watchdog"
 CONFIG_FILE="/usr/local/etc/tailscale_watchdog.conf"
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
-PEERS="router router2"
+PEERS="router1 router2"
 CHECK_INTERVAL=60
 FAIL_THRESHOLD=5
 PING_COUNT=5
@@ -211,6 +210,11 @@ validate_config() {
   fi
 
   _seen_safe=""
+  _noglob_was_set=0
+  case $- in
+    *f*) _noglob_was_set=1 ;;
+    *) set -f ;;
+  esac
   for _vpeer in $PEERS; do
     case "$_vpeer" in
       *[!A-Za-z0-9._-]*)
@@ -227,7 +231,10 @@ validate_config() {
     esac
     _seen_safe="${_seen_safe} ${_vsafe}"
   done
-  unset _vpeer _vsafe _seen_safe
+  if [ "$_noglob_was_set" -eq 0 ]; then
+    set +f
+  fi
+  unset _vpeer _vsafe _seen_safe _noglob_was_set
 
   if ! is_positive_int "$CHECK_INTERVAL"; then
     echo "CHECK_INTERVAL must be a positive integer: $CHECK_INTERVAL" >&2
@@ -261,10 +268,32 @@ validate_config() {
     echo "RESTART_SERVICES must not be empty" >&2
     exit 2
   fi
+  _noglob_was_set=0
+  case $- in
+    *f*) _noglob_was_set=1 ;;
+    *) set -f ;;
+  esac
+  for _vsvc in $RESTART_SERVICES; do
+    case "$_vsvc" in
+      *[!A-Za-z0-9._-]*)
+        echo "Invalid service name (contains shell-unsafe characters): ${_vsvc}" >&2
+        exit 2
+        ;;
+    esac
+  done
+  if [ "$_noglob_was_set" -eq 0 ]; then
+    set +f
+  fi
+  unset _vsvc _noglob_was_set
+}
+
+curl_config_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 notify() {
   message="$1"
+
   if [ -z "$PUSHOVER_TOKEN" ] || [ -z "$PUSHOVER_USER" ]; then
     log_msg "Pushover notification skipped: token or user key is empty"
     return 0
@@ -273,15 +302,21 @@ notify() {
     log_msg "Pushover notification failed: curl not found"
     return 1
   fi
-  if ! curl -fsS --max-time "$CURL_TIMEOUT" \
-    --form-string "token=${PUSHOVER_TOKEN}" \
-    --form-string "user=${PUSHOVER_USER}" \
-    --form-string "message=${message}" \
-    https://api.pushover.net/1/messages.json >/dev/null 2>&1
-  then
+
+  if ! {
+    printf 'fail\n'
+    printf 'show-error\n'
+    printf 'silent\n'
+    printf 'max-time = "%s"\n' "$(curl_config_escape "$CURL_TIMEOUT")"
+    printf 'url = "https://api.pushover.net/1/messages.json"\n'
+    printf 'form-string = "token=%s"\n' "$(curl_config_escape "$PUSHOVER_TOKEN")"
+    printf 'form-string = "user=%s"\n' "$(curl_config_escape "$PUSHOVER_USER")"
+    printf 'form-string = "message=%s"\n' "$(curl_config_escape "$message")"
+  } | curl -K - >/dev/null 2>&1; then
     log_msg "Pushover notification failed"
     return 1
   fi
+
   return 0
 }
 
@@ -320,11 +355,20 @@ set_peer_attr() {
 }
 
 reset_all_peer_state_after_restart() {
+  _noglob_was_set=0
+  case $- in
+    *f*) _noglob_was_set=1 ;;
+    *) set -f ;;
+  esac
   for peer in $PEERS; do
     set_peer_attr count "$peer" 0
     set_peer_attr state "$peer" post_restart
     set_peer_attr threshold_seen "$peer" none
   done
+  if [ "$_noglob_was_set" -eq 0 ]; then
+    set +f
+  fi
+  unset _noglob_was_set
 }
 
 # ---- Restart cooldown state ------------------------------------------------
@@ -436,10 +480,21 @@ cooldown_remaining() {
 }
 
 mark_restart_attempt() {
+  tmp_next=""
+
+  if [ -L "$STATE_DIR" ]; then
+    log_msg "State path is a symlink, refusing to write cooldown state: ${STATE_DIR}"
+    return 1
+  fi
+  if [ -e "$STATE_DIR" ] && [ ! -d "$STATE_DIR" ]; then
+    log_msg "State path exists but is not a directory: ${STATE_DIR}"
+    return 1
+  fi
   if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
     log_msg "Could not create state directory: ${STATE_DIR}"
     return 1
   fi
+  chmod 0700 "$STATE_DIR" 2>/dev/null || true
 
   # Choose a random cooldown and compute the next-allowed timestamp.
   # This is done on every restart attempt — success or failure — so that
@@ -449,8 +504,26 @@ mark_restart_attempt() {
   now="$(date '+%s')"
   next=$(( now + cooldown ))
 
-  if ! printf '%s\n' "$next" > "$NEXT_RESTART_FILE" 2>/dev/null; then
+  if [ -e "$NEXT_RESTART_FILE" ] && [ ! -f "$NEXT_RESTART_FILE" ]; then
+    log_msg "Restart cooldown state path exists but is not a regular file: ${NEXT_RESTART_FILE}"
+    return 1
+  fi
+
+  tmp_next="$(mktemp "${STATE_DIR}/.next_restart_allowed.XXXXXX")" || {
+    log_msg "Could not create temporary restart cooldown state in: ${STATE_DIR}"
+    return 1
+  }
+
+  if ! printf '%s\n' "$next" > "$tmp_next" 2>/dev/null; then
+    rm -f "$tmp_next"
     log_msg "Could not write restart cooldown state: ${NEXT_RESTART_FILE}"
+    return 1
+  fi
+  chmod 0600 "$tmp_next" 2>/dev/null || true
+
+  if ! mv -f "$tmp_next" "$NEXT_RESTART_FILE" 2>/dev/null; then
+    rm -f "$tmp_next"
+    log_msg "Could not move restart cooldown state into place: ${NEXT_RESTART_FILE}"
     return 1
   fi
 
@@ -525,6 +598,11 @@ restart_tailscale_services() {
   # does not leave multiple routers free to retry in lockstep.
   mark_restart_attempt
 
+  _noglob_was_set=0
+  case $- in
+    *f*) _noglob_was_set=1 ;;
+    *) set -f ;;
+  esac
   for svc in $RESTART_SERVICES; do
     output="$(service "$svc" restart 2>&1)"
     rc=$?
@@ -535,6 +613,10 @@ restart_tailscale_services() {
       log_msg "Service restart FAILED: ${svc}; rc=${rc}; output=${output}"
     fi
   done
+  if [ "$_noglob_was_set" -eq 0 ]; then
+    set +f
+  fi
+  unset _noglob_was_set
 
   if [ "$failures" -eq 0 ]; then
     msg="Tailscale watchdog: restarted ${RESTART_SERVICES} after peer ${reason_peer} was relayed for ${reason_count} consecutive checks."
@@ -647,9 +729,18 @@ check_peer() {
 }
 
 check_all_peers() {
+  _noglob_was_set=0
+  case $- in
+    *f*) _noglob_was_set=1 ;;
+    *) set -f ;;
+  esac
   for peer in $PEERS; do
     check_peer "$peer"
   done
+  if [ "$_noglob_was_set" -eq 0 ]; then
+    set +f
+  fi
+  unset _noglob_was_set
 }
 
 # ---- Signal handling -------------------------------------------------------

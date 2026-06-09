@@ -22,7 +22,17 @@ cat > "${fakebin}/logger" <<'EOF'
 #!/bin/sh
 exit 0
 EOF
-chmod 755 "${fakebin}/logger"
+
+cat > "${fakebin}/date" <<'EOF'
+#!/bin/sh
+if [ "$1" = "+%s" ]; then
+  printf '%s\n' 100000
+else
+  /bin/date "$@"
+fi
+EOF
+
+chmod 755 "${fakebin}/logger" "${fakebin}/date"
 
 PATH="${fakebin}:/usr/bin:/bin"
 export PATH
@@ -68,3 +78,23 @@ chmod 755 "${fakebin}/jot"
 
 assert_eq "bad jot output falls back to minimum cooldown" \
   "900" "$(random_cooldown_seconds)"
+
+cat > "${fakebin}/jot" <<'EOF'
+#!/bin/sh
+printf '%s\n' 900
+EOF
+chmod 755 "${fakebin}/jot"
+
+rm -rf "$STATE_DIR"
+RESTART_COOLDOWN_MIN=900
+RESTART_COOLDOWN_MAX=900
+assert_success "mark_restart_attempt writes cooldown atomically" mark_restart_attempt
+assert_eq "mark_restart_attempt stores next allowed epoch" \
+  "100900" "$(cat "$NEXT_RESTART_FILE")"
+assert_eq "mark_restart_attempt leaves no temp files" \
+  "0" "$(find "$STATE_DIR" -name '.next_restart_allowed.*' | wc -l | tr -d ' ')"
+
+rm -rf "$STATE_DIR"
+ln -s "${tmpdir}/elsewhere" "$STATE_DIR"
+assert_eq "symlink state dir is refused" \
+  "1" "$(mark_restart_attempt >/dev/null 2>&1; printf '%s' "$?")"

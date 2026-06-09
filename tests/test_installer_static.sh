@@ -64,6 +64,12 @@ assert_not_contains "installer does not write enable line" \
 assert_contains "installer tracks preexisting live config" \
   "$install_text" "LIVE_CONFIG_PREEXISTED=1"
 
+assert_contains "installer has readable example config mode" \
+  "$install_text" 'CONF_EXAMPLE_MODE="0644"'
+
+assert_contains "installer has private live config mode" \
+  "$install_text" 'CONF_LIVE_MODE="0600"'
+
 assert_contains "installer rejects live config symlink" \
   "$install_text" 'if [ -L "$CONF_DST_LIVE" ]; then'
 
@@ -73,11 +79,14 @@ assert_contains "installer rejects non-regular live config path" \
 assert_contains "installer preserves existing live config branch" \
   "$install_text" "Existing live config preserved"
 
+assert_contains "installer installs example config with example mode" \
+  "$install_text" '"$CONF_EXAMPLE_MODE"'
+
 assert_contains "installer creates live config only when missing" \
   "$install_text" 'if [ "$LIVE_CONFIG_PREEXISTED" -eq 1 ]; then'
 
 assert_contains "installer installs live config in missing-config branch" \
-  "$install_text" '"$CONF_DST_LIVE"'
+  "$install_text" '"$CONF_LIVE_MODE"'
 
 assert_contains "installer validates daemon syntax" \
   "$install_text" 'validate_shell_syntax "${STAGE_DIR}/${DAEMON_SRC}" "daemon"'
@@ -96,3 +105,6 @@ assert_contains "installer atomically moves temp file into place" \
 
 assert_contains "installer checks service status but does not restart it" \
   "$install_text" 'service tailscale_watchdog status'
+
+assert_not_contains "installer does not recommend raw live/example diff" \
+  "$install_text" 'diff ${CONF_DST_LIVE} ${CONF_DST_EXAMPLE}'

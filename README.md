@@ -209,33 +209,41 @@ sh -n install.sh
 sh -n uninstall.sh
 ```
 
-Install the daemon:
+Install the daemon atomically:
 
 ```sh
-cp tailscale_watchdogd /usr/local/sbin/tailscale_watchdogd
-chown root:wheel /usr/local/sbin/tailscale_watchdogd
-chmod 0755 /usr/local/sbin/tailscale_watchdogd
+tmp="$(mktemp /usr/local/sbin/.tailscale_watchdogd.XXXXXX)"
+cp tailscale_watchdogd "$tmp"
+chown root:wheel "$tmp"
+chmod 0755 "$tmp"
+mv -f "$tmp" /usr/local/sbin/tailscale_watchdogd
 ```
 
-Install the service wrapper:
+Install the service wrapper atomically:
 
 ```sh
-cp tailscale_watchdog /usr/local/etc/rc.d/tailscale_watchdog
-chown root:wheel /usr/local/etc/rc.d/tailscale_watchdog
-chmod 0755 /usr/local/etc/rc.d/tailscale_watchdog
+tmp="$(mktemp /usr/local/etc/rc.d/.tailscale_watchdog.XXXXXX)"
+cp tailscale_watchdog "$tmp"
+chown root:wheel "$tmp"
+chmod 0755 "$tmp"
+mv -f "$tmp" /usr/local/etc/rc.d/tailscale_watchdog
 ```
 
 Install the example config and create a starter live config only if one does not already exist:
 
 ```sh
-cp tailscale_watchdog.conf.example /usr/local/etc/tailscale_watchdog.conf.example
-chown root:wheel /usr/local/etc/tailscale_watchdog.conf.example
-chmod 0644 /usr/local/etc/tailscale_watchdog.conf.example
+tmp="$(mktemp /usr/local/etc/.tailscale_watchdog.conf.example.XXXXXX)"
+cp tailscale_watchdog.conf.example "$tmp"
+chown root:wheel "$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" /usr/local/etc/tailscale_watchdog.conf.example
 
 if [ ! -e /usr/local/etc/tailscale_watchdog.conf ]; then
-  cp tailscale_watchdog.conf.example /usr/local/etc/tailscale_watchdog.conf
-  chown root:wheel /usr/local/etc/tailscale_watchdog.conf
-  chmod 0600 /usr/local/etc/tailscale_watchdog.conf
+  tmp="$(mktemp /usr/local/etc/.tailscale_watchdog.conf.XXXXXX)"
+  cp tailscale_watchdog.conf.example "$tmp"
+  chown root:wheel "$tmp"
+  chmod 0600 "$tmp"
+  mv -f "$tmp" /usr/local/etc/tailscale_watchdog.conf
 fi
 
 vi /usr/local/etc/tailscale_watchdog.conf
@@ -368,10 +376,20 @@ Common causes include:
 
 ### Notifications are not sent
 
-Check that both values are set:
+Check whether both values are set without printing the credentials:
 
 ```sh
-grep '^PUSHOVER_' /usr/local/etc/tailscale_watchdog.conf
+awk -F= '
+  /^PUSHOVER_/ {
+    value = $2
+    gsub(/[[:space:]"]/, "", value)
+    if (value == "") {
+      print $1 "=empty"
+    } else {
+      print $1 "=set"
+    }
+  }
+' /usr/local/etc/tailscale_watchdog.conf
 ```
 
 Also confirm `curl` is installed:
