@@ -29,6 +29,8 @@ It does not modify your Tailscale account, ACLs, routes, firewall rules, or Tail
 
 ## Quick install
 
+Review-first installation is recommended because the installer runs as root.
+
 The quickest installation method is:
 
 ```sh
@@ -90,7 +92,7 @@ PING_COUNT=5
 # restart attempt is allowed. A random value in this range is selected
 # after each restart attempt.
 RESTART_COOLDOWN_MIN=900
-RESTART_COOLDOWN_MAX=2700
+RESTART_COOLDOWN_MAX=1800
 
 # Services restarted when the threshold is reached.
 RESTART_SERVICES="tailscaled pfsense_tailscaled"
@@ -120,10 +122,10 @@ For example:
 
 ```sh
 RESTART_COOLDOWN_MIN=900
-RESTART_COOLDOWN_MAX=2700
+RESTART_COOLDOWN_MAX=1800
 ```
 
-allows the next restart attempt somewhere between 15 and 45 minutes later.
+allows the next restart attempt somewhere between 15 and 30 minutes later.
 
 If you want a fixed cooldown, set both values to the same number:
 
@@ -197,13 +199,22 @@ git clone https://github.com/toddawhittaker/tailscale-direct-pfsense.git
 cd tailscale-direct-pfsense
 ```
 
+Syntax-check the scripts before installing:
+
+```sh
+sh -n tailscale_watchdogd
+sh -n tailscale_watchdog
+sh -n tailscale_watchdog.conf.example
+sh -n install.sh
+sh -n uninstall.sh
+```
+
 Install the daemon:
 
 ```sh
 cp tailscale_watchdogd /usr/local/sbin/tailscale_watchdogd
 chown root:wheel /usr/local/sbin/tailscale_watchdogd
 chmod 0755 /usr/local/sbin/tailscale_watchdogd
-sh -n /usr/local/sbin/tailscale_watchdogd
 ```
 
 Install the service wrapper:
@@ -212,15 +223,21 @@ Install the service wrapper:
 cp tailscale_watchdog /usr/local/etc/rc.d/tailscale_watchdog
 chown root:wheel /usr/local/etc/rc.d/tailscale_watchdog
 chmod 0755 /usr/local/etc/rc.d/tailscale_watchdog
-sh -n /usr/local/etc/rc.d/tailscale_watchdog
 ```
 
-Install the config:
+Install the example config and create a starter live config only if one does not already exist:
 
 ```sh
-cp tailscale_watchdog.conf.example /usr/local/etc/tailscale_watchdog.conf
-chown root:wheel /usr/local/etc/tailscale_watchdog.conf
-chmod 0600 /usr/local/etc/tailscale_watchdog.conf
+cp tailscale_watchdog.conf.example /usr/local/etc/tailscale_watchdog.conf.example
+chown root:wheel /usr/local/etc/tailscale_watchdog.conf.example
+chmod 0644 /usr/local/etc/tailscale_watchdog.conf.example
+
+if [ ! -e /usr/local/etc/tailscale_watchdog.conf ]; then
+  cp tailscale_watchdog.conf.example /usr/local/etc/tailscale_watchdog.conf
+  chown root:wheel /usr/local/etc/tailscale_watchdog.conf
+  chmod 0600 /usr/local/etc/tailscale_watchdog.conf
+fi
+
 vi /usr/local/etc/tailscale_watchdog.conf
 ```
 
@@ -275,6 +292,7 @@ The uninstaller:
 - removes watchdog service settings from `/etc/rc.conf.local`
 - removes the daemon, service wrapper, example config, and runtime state
 - asks before removing the live config file
+- preserves the live config by default if no interactive TTY is available
 
 It does not remove the Tailscale package.
 
@@ -346,7 +364,7 @@ Common causes include:
 - config file permissions are too open
 - invalid peer names
 - Tailscale is not authenticated or running
-- the expected service names are not available on the system
+- the expected service names are not available on the system; adjust `RESTART_SERVICES` to match the local pfSense service names
 
 ### Notifications are not sent
 
