@@ -9,6 +9,10 @@ REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 
 readme_text="$(cat "${REPO_ROOT}/README.md")"
 daemon_text="$(cat "${REPO_ROOT}/tailscale_watchdogd")"
+rc_text="$(cat "${REPO_ROOT}/tailscale_watchdog")"
+install_text="$(cat "${REPO_ROOT}/install.sh")"
+uninstall_text="$(cat "${REPO_ROOT}/uninstall.sh")"
+docs_url="https://github.com/toddawhittaker/tailscale-direct-pfsense"
 
 assert_not_contains "README does not recommend printing Pushover secrets" \
   "$readme_text" "grep '^PUSHOVER_'"
@@ -24,3 +28,27 @@ assert_contains "README manual install uses mktemp" \
 
 assert_contains "daemon defaults use generic peers" \
   "$daemon_text" 'PEERS="router1 router2"'
+
+assert_contains "daemon header includes documentation URL" \
+  "$daemon_text" "$docs_url"
+
+assert_contains "daemon startup log includes docs field" \
+  "$daemon_text" 'docs=${DOCS_URL}'
+
+assert_contains "daemon startup log uses compact cooldown range" \
+  "$daemon_text" 'cooldown=(min=${RESTART_COOLDOWN_MIN}s,max=${RESTART_COOLDOWN_MAX}s)'
+
+assert_contains "rc wrapper header includes documentation URL" \
+  "$rc_text" "$docs_url"
+
+assert_contains "installer header includes documentation URL" \
+  "$install_text" "$docs_url"
+
+assert_contains "installer output includes documentation URL" \
+  "$install_text" 'Documentation:'
+
+assert_contains "uninstaller header includes documentation URL" \
+  "$uninstall_text" "$docs_url"
+
+assert_contains "uninstaller output includes documentation URL" \
+  "$uninstall_text" 'Documentation:'

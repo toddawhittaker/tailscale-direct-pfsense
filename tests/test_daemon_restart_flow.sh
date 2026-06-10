@@ -17,6 +17,7 @@ mkdir -p "$fakebin" || exit 1
 
 cat > "${fakebin}/logger" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >> "$LOGGER_LOG"
 exit 0
 EOF
 
@@ -61,9 +62,10 @@ PATH="${fakebin}:/usr/bin:/bin"
 export PATH
 
 SERVICE_LOG="${tmpdir}/service.log"
+LOGGER_LOG="${tmpdir}/logger.log"
 SERVICE_FAIL=0
 REQUIRE_COOLDOWN_BEFORE_SERVICE=1
-export SERVICE_LOG SERVICE_FAIL REQUIRE_COOLDOWN_BEFORE_SERVICE
+export SERVICE_LOG LOGGER_LOG SERVICE_FAIL REQUIRE_COOLDOWN_BEFORE_SERVICE
 
 STATE_DIR="${tmpdir}/state"
 NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
@@ -99,11 +101,16 @@ assert_contains "restart flow restarts tailscaled" "$service_log" "tailscaled re
 assert_contains "restart flow restarts pfsense_tailscaled" "$service_log" "pfsense_tailscaled restart"
 assert_not_contains "service was not called before cooldown write" \
   "$service_log" "missing cooldown before service"
+logger_log="$(cat "$LOGGER_LOG" 2>/dev/null)"
+assert_contains "restart flow logs selected cooldown" \
+  "$logger_log" "Restart cooldown selected: cooldown=900s next_allowed_epoch=100900 range=(min=900s,max=900s)"
 
 SERVICE_FAIL=1
 export SERVICE_FAIL
 SERVICE_LOG="${tmpdir}/service-fail.log"
+LOGGER_LOG="${tmpdir}/logger-fail.log"
 export SERVICE_LOG
+export LOGGER_LOG
 
 set_peer_attr count router1 5
 set_peer_attr state router1 relayed
@@ -117,11 +124,15 @@ assert_eq "failed restart preserves router1 counter" \
   "5" "$(get_peer_attr count router1 unset)"
 assert_eq "failed restart preserves router2 counter" \
   "3" "$(get_peer_attr count router2 unset)"
+assert_contains "failed restart logs selected cooldown" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "Restart cooldown selected: cooldown=900s"
 
 SERVICE_FAIL=0
 export SERVICE_FAIL
 SERVICE_LOG="${tmpdir}/cooldown-write-fail.log"
+LOGGER_LOG="${tmpdir}/logger-cooldown-write-fail.log"
 export SERVICE_LOG
+export LOGGER_LOG
 rm -rf "$STATE_DIR"
 ln -s "${tmpdir}/elsewhere" "$STATE_DIR"
 

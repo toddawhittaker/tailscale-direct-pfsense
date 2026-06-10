@@ -6,6 +6,9 @@
 # If a peer is relayed for FAIL_THRESHOLD consecutive checks, restart
 # tailscaled and pfsense_tailscaled, then send a Pushover notification.
 #
+# Documentation:
+#   https://github.com/toddawhittaker/tailscale-direct-pfsense
+#
 # Normal healthy operation performs no per-minute disk writes.
 #
 # Usage:
@@ -32,6 +35,7 @@
 #
 PATH="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin"
 TAG="tailscale_watchdog"
+DOCS_URL="https://github.com/toddawhittaker/tailscale-direct-pfsense"
 
 # ---- Configuration defaults ------------------------------------------------
 #
@@ -80,6 +84,11 @@ TEST=0
 ONE_SHOT=0
 DEBUG=0
 RESTART_DEFERRAL_ATTEMPTS=0
+LAST_RESTART_COOLDOWN=""
+LAST_RESTART_NEXT_ALLOWED=""
+LAST_RESTART_DEFERRAL_RESULT=""
+LAST_RESTART_DEFERRAL_DELTA=""
+LAST_RESTART_DEFERRAL_ATTEMPTS=""
 
 # Holds the PID of the background sleep process during the main loop so that
 # handle_shutdown can kill it promptly on SIGTERM/SIGINT.
@@ -619,54 +628,70 @@ get_interface_bytes() {
 should_defer_restart() {
   reason_peer="$1"
   reason_count="$2"
+  LAST_RESTART_DEFERRAL_RESULT="disabled"
+  LAST_RESTART_DEFERRAL_DELTA=""
+  LAST_RESTART_DEFERRAL_ATTEMPTS="$RESTART_DEFERRAL_ATTEMPTS"
 
   if [ "$RESTART_DEFERRAL_ENABLED" -ne 1 ]; then
     return 1
   fi
 
   if [ "$RESTART_DEFERRAL_ATTEMPTS" -ge "$RESTART_DEFERRAL_MAX_ATTEMPTS" ]; then
+    LAST_RESTART_DEFERRAL_RESULT="max_attempts"
+    LAST_RESTART_DEFERRAL_ATTEMPTS="$RESTART_DEFERRAL_ATTEMPTS"
     log_msg "Restart deferral limit reached (${RESTART_DEFERRAL_ATTEMPTS}/${RESTART_DEFERRAL_MAX_ATTEMPTS}); proceeding with restart"
     return 1
   fi
 
   first="$(get_interface_bytes "$RESTART_DEFERRAL_INTERFACE")"
   if [ "$?" -ne 0 ]; then
+    LAST_RESTART_DEFERRAL_RESULT="check_failed"
     log_msg "Restart deferral activity check failed for interface ${RESTART_DEFERRAL_INTERFACE}; proceeding without deferral"
     return 1
   fi
 
   if ! watchdog_sleep "$RESTART_DEFERRAL_CHECK_SECONDS"; then
+    LAST_RESTART_DEFERRAL_RESULT="interrupted"
     log_msg "Restart deferral sleep interrupted; proceeding without deferral"
     return 1
   fi
 
   second="$(get_interface_bytes "$RESTART_DEFERRAL_INTERFACE")"
   if [ "$?" -ne 0 ]; then
+    LAST_RESTART_DEFERRAL_RESULT="check_failed"
     log_msg "Restart deferral activity check failed for interface ${RESTART_DEFERRAL_INTERFACE}; proceeding without deferral"
     return 1
   fi
 
   delta=$(( second - first ))
+  LAST_RESTART_DEFERRAL_DELTA="$delta"
   if [ "$delta" -lt 0 ]; then
+    LAST_RESTART_DEFERRAL_RESULT="counter_backward"
     log_msg "Restart deferral activity check failed: byte counter moved backward on ${RESTART_DEFERRAL_INTERFACE}; proceeding without deferral"
     return 1
   fi
 
   if [ "$delta" -le "$RESTART_DEFERRAL_MAX_BYTES" ]; then
+    LAST_RESTART_DEFERRAL_RESULT="quiet"
     if [ "$RESTART_DEFERRAL_ATTEMPTS" -gt 0 ]; then
       log_msg "Restart deferral ended: interface ${RESTART_DEFERRAL_INTERFACE} is quiet (${delta} bytes over ${RESTART_DEFERRAL_CHECK_SECONDS}s)"
     fi
     RESTART_DEFERRAL_ATTEMPTS=0
+    LAST_RESTART_DEFERRAL_ATTEMPTS="$RESTART_DEFERRAL_ATTEMPTS"
     return 1
   fi
 
   RESTART_DEFERRAL_ATTEMPTS=$((RESTART_DEFERRAL_ATTEMPTS + 1))
+  LAST_RESTART_DEFERRAL_RESULT="busy"
+  LAST_RESTART_DEFERRAL_ATTEMPTS="$RESTART_DEFERRAL_ATTEMPTS"
   log_msg "Restart deferred (${RESTART_DEFERRAL_ATTEMPTS}/${RESTART_DEFERRAL_MAX_ATTEMPTS}): interface ${RESTART_DEFERRAL_INTERFACE} saw ${delta} bytes over ${RESTART_DEFERRAL_CHECK_SECONDS}s after peer ${reason_peer} reached ${reason_count}/${FAIL_THRESHOLD} relayed checks"
   return 0
 }
 
 mark_restart_attempt() {
   tmp_next=""
+  LAST_RESTART_COOLDOWN=""
+  LAST_RESTART_NEXT_ALLOWED=""
 
   if [ -L "$STATE_DIR" ]; then
     log_msg "State path is a symlink, refusing to write cooldown state: ${STATE_DIR}"
@@ -713,7 +738,9 @@ mark_restart_attempt() {
     return 1
   fi
 
-  log_msg "Next restart allowed at epoch ${next} (in ${cooldown}s)"
+  LAST_RESTART_COOLDOWN="$cooldown"
+  LAST_RESTART_NEXT_ALLOWED="$next"
+  log_msg "Restart cooldown selected: cooldown=${cooldown}s next_allowed_epoch=${next} range=(min=${RESTART_COOLDOWN_MIN}s,max=${RESTART_COOLDOWN_MAX}s)"
   return 0
 }
 
@@ -824,6 +851,8 @@ restart_tailscale_services() {
 maybe_restart_for_peer() {
   peer="$1"
   count="$2"
+  decision_peer="$peer"
+  decision_count="$count"
 
   if [ "$count" -lt "$FAIL_THRESHOLD" ]; then
     return 0
@@ -832,6 +861,7 @@ maybe_restart_for_peer() {
   if [ "$TEST" -eq 1 ]; then
     seen="$(get_peer_attr threshold_seen "$peer" none)"
     if [ "$seen" != "test" ]; then
+      log_msg "Restart decision: peer=${decision_peer} count=${decision_count}/${FAIL_THRESHOLD} cooldown=not_checked deferral=not_checked action=test would_restart=\"${RESTART_SERVICES}\""
       log_msg "TEST MODE: peer ${peer} reached ${count}/${FAIL_THRESHOLD} relayed checks; would restart ${RESTART_SERVICES}"
       set_peer_attr threshold_seen "$peer" test
     fi
@@ -842,19 +872,33 @@ maybe_restart_for_peer() {
   if [ "$remaining" -gt 0 ]; then
     seen="$(get_peer_attr threshold_seen "$peer" none)"
     if [ "$seen" != "cooldown" ]; then
+      log_msg "Restart decision: peer=${decision_peer} count=${decision_count}/${FAIL_THRESHOLD} cooldown=blocked remaining=${remaining}s deferral=not_checked action=suppress"
       log_msg "Peer ${peer} reached ${count}/${FAIL_THRESHOLD} relayed checks, but restart is suppressed by cooldown for ${remaining} more seconds"
       set_peer_attr threshold_seen "$peer" cooldown
     fi
     return 0
   fi
 
-  if should_defer_restart "$peer" "$count"; then
-    set_peer_attr threshold_seen "$peer" deferral
+  if should_defer_restart "$decision_peer" "$decision_count"; then
+    log_msg "Restart decision: peer=${decision_peer} count=${decision_count}/${FAIL_THRESHOLD} cooldown=allowed deferral=busy attempts=${LAST_RESTART_DEFERRAL_ATTEMPTS}/${RESTART_DEFERRAL_MAX_ATTEMPTS} delta=${LAST_RESTART_DEFERRAL_DELTA} action=defer"
+    set_peer_attr threshold_seen "$decision_peer" deferral
     return 0
   fi
 
-  restart_tailscale_services "$peer" "$count"
-  return $?
+  deferral_result="${LAST_RESTART_DEFERRAL_RESULT:-disabled}"
+  if restart_tailscale_services "$decision_peer" "$decision_count"; then
+    selected="${LAST_RESTART_COOLDOWN:-unknown}"
+    next_allowed="${LAST_RESTART_NEXT_ALLOWED:-unknown}"
+    log_msg "Restart decision: peer=${decision_peer} count=${decision_count}/${FAIL_THRESHOLD} cooldown=selected selected=${selected}s next_allowed_epoch=${next_allowed} deferral=${deferral_result} action=restart services=\"${RESTART_SERVICES}\" result=success"
+    return 0
+  fi
+
+  if [ -n "$LAST_RESTART_COOLDOWN" ]; then
+    log_msg "Restart decision: peer=${decision_peer} count=${decision_count}/${FAIL_THRESHOLD} cooldown=selected selected=${LAST_RESTART_COOLDOWN}s next_allowed_epoch=${LAST_RESTART_NEXT_ALLOWED} deferral=${deferral_result} action=restart services=\"${RESTART_SERVICES}\" result=failed"
+  else
+    log_msg "Restart decision: peer=${decision_peer} count=${decision_count}/${FAIL_THRESHOLD} cooldown=write_failed deferral=${deferral_result} action=suppress"
+  fi
+  return 1
 }
 
 # ---- Per-peer state machine ------------------------------------------------
@@ -1030,7 +1074,7 @@ main() {
 
   trap handle_shutdown INT TERM
 
-  log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown_min=${RESTART_COOLDOWN_MIN}s cooldown_max=${RESTART_COOLDOWN_MAX}s restart_deferral_enabled=${RESTART_DEFERRAL_ENABLED} restart_deferral_interface=${RESTART_DEFERRAL_INTERFACE} test=${TEST}"
+  log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown=(min=${RESTART_COOLDOWN_MIN}s,max=${RESTART_COOLDOWN_MAX}s) restart_deferral_enabled=${RESTART_DEFERRAL_ENABLED} restart_deferral_interface=${RESTART_DEFERRAL_INTERFACE} test=${TEST} docs=${DOCS_URL}"
 
   if [ "$ONE_SHOT" -eq 1 ]; then
     check_all_peers

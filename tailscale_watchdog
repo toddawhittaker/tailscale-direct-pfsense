@@ -4,6 +4,9 @@
 # REQUIRE: NETWORKING tailscaled pfsense_tailscaled
 # KEYWORD: shutdown
 #
+# Documentation:
+#   https://github.com/toddawhittaker/tailscale-direct-pfsense
+#
 # Add the following to /etc/rc.conf.local to enable:
 #   tailscale_watchdog_enable="YES"
 #

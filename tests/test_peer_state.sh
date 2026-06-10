@@ -17,6 +17,7 @@ mkdir -p "$fakebin" || exit 1
 
 cat > "${fakebin}/logger" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >> "$LOGGER_LOG"
 exit 0
 EOF
 
@@ -63,7 +64,8 @@ STATE_DIR="${tmpdir}/state"
 NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 SERVICE_LOG="${tmpdir}/service.log"
 CURL_LOG="${tmpdir}/curl.log"
-export SERVICE_LOG CURL_LOG
+LOGGER_LOG="${tmpdir}/logger.log"
+export SERVICE_LOG CURL_LOG LOGGER_LOG
 TEST=1
 DEBUG=0
 PUSHOVER_TOKEN=""
@@ -80,6 +82,8 @@ handle_relayed router1
 assert_eq "test mode threshold keeps counter" "2" "$(get_peer_attr count router1 unset)"
 assert_eq "test mode records threshold seen" "test" "$(get_peer_attr threshold_seen router1 unset)"
 assert_eq "test mode does not call service" "missing" "$([ -f "$SERVICE_LOG" ] && cat "$SERVICE_LOG" || printf 'missing')"
+assert_contains "test mode logs restart decision summary" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "Restart decision: peer=router1 count=2/2 cooldown=not_checked deferral=not_checked action=test"
 
 handle_direct router1
 assert_eq "direct resets relay counter" "0" "$(get_peer_attr count router1 unset)"
@@ -95,6 +99,8 @@ assert_eq "unknown marks state" "unknown" "$(get_peer_attr state router1 unset)"
 assert_eq "unknown clears threshold marker" "none" "$(get_peer_attr threshold_seen router1 unset)"
 
 TEST=0
+LOGGER_LOG="${tmpdir}/logger-cooldown.log"
+export LOGGER_LOG
 mkdir -p "$STATE_DIR" || exit 1
 printf '%s\n' 100500 > "$NEXT_RESTART_FILE"
 PUSHOVER_TOKEN="test-token"
@@ -108,6 +114,8 @@ assert_eq "cooldown threshold marker is recorded" "cooldown" "$(get_peer_attr th
 assert_eq "cooldown suppresses service call" "missing" "$([ -f "$SERVICE_LOG" ] && cat "$SERVICE_LOG" || printf 'missing')"
 assert_eq "cooldown suppresses Pushover notification" \
   "missing" "$([ -f "$CURL_LOG" ] && cat "$CURL_LOG" || printf 'missing')"
+assert_contains "cooldown logs restart decision summary" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "Restart decision: peer=router2 count=2/2 cooldown=blocked remaining=500s deferral=not_checked action=suppress"
 
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""

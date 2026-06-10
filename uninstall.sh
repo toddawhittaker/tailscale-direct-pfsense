@@ -5,6 +5,9 @@
 # Removes the Tailscale watchdog daemon and its rc wrapper from pfSense.
 # Optionally removes the live config file after asking the operator.
 #
+# Documentation:
+#   https://github.com/toddawhittaker/tailscale-direct-pfsense
+#
 # Usage (as root):
 #   curl -fsSL \
 #     https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/uninstall.sh \
@@ -53,6 +56,7 @@ STATE_DIR="/var/run/tailscale_watchdog"
 RCCONF_LOCAL="/etc/rc.conf.local"
 SERVICE_NAME="tailscale_watchdog"
 PIDFILE="/var/run/${SERVICE_NAME}.pid"
+DOCS_URL="https://github.com/toddawhittaker/tailscale-direct-pfsense"
 
 DAEMON_DST="/usr/local/sbin/tailscale_watchdogd"
 RC_DST="/usr/local/etc/rc.d/tailscale_watchdog"
@@ -413,6 +417,7 @@ print_summary() {
   printf '\n'
   info "The Tailscale package itself was not removed."
   info "To remove Tailscale, use the pfSense package manager."
+  info "Documentation: ${DOCS_URL}"
   printf '\n'
 }
 
@@ -422,6 +427,7 @@ main() {
   printf '\n'
   printf '%s\n' "============================================================"
   printf '%s\n' " Tailscale Direct Watchdog — Uninstaller"
+  printf ' Documentation: %s\n' "$DOCS_URL"
   printf '%s\n' "============================================================"
 
   preflight_checks

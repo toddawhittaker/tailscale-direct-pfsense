@@ -4,6 +4,9 @@
 #
 # Installs the Tailscale watchdog daemon and its rc wrapper on pfSense.
 #
+# Documentation:
+#   https://github.com/toddawhittaker/tailscale-direct-pfsense
+#
 # Usage (as root):
 #   curl -fsSL \
 #     https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/install.sh \
@@ -92,6 +95,7 @@ REPO_OWNER="toddawhittaker"
 REPO_NAME="tailscale-direct-pfsense"
 VERSION="${VERSION:-main}"
 
+REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
 BASE_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${VERSION}"
 
 # Installation destinations.
@@ -564,6 +568,9 @@ Files installed:
   ${RC_DST}
   ${CONF_DST_EXAMPLE}  (reference copy, updated to this version)
 
+Documentation:
+  ${REPO_URL}
+
 EOF
 
   if [ "$LIVE_CONFIG_PREEXISTED" -eq 1 ]; then
@@ -647,6 +654,7 @@ main() {
   printf '%s\n' "============================================================"
   printf '%s\n' " Tailscale Direct Watchdog — Installer"
   printf ' %s/%s @ %s\n' "$REPO_OWNER" "$REPO_NAME" "$VERSION"
+  printf ' Documentation: %s\n' "$REPO_URL"
   printf '%s\n' "============================================================"
 
   preflight_checks

@@ -17,6 +17,7 @@ mkdir -p "$fakebin" || exit 1
 
 cat > "${fakebin}/logger" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >> "$LOGGER_LOG"
 exit 0
 EOF
 
@@ -128,6 +129,7 @@ RESTART_DEFERRAL_ATTEMPTS=0
 STATE_DIR="${tmpdir}/state"
 NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 SERVICE_LOG="${tmpdir}/service.log"
+LOGGER_LOG="${tmpdir}/logger.log"
 SLEEP_LOG="${tmpdir}/sleep.log"
 NETSTAT_LOG="${tmpdir}/netstat.log"
 NETSTAT_COUNT_FILE="${tmpdir}/netstat-count"
@@ -135,7 +137,7 @@ PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
 TEST=0
 DEBUG=0
-export SERVICE_LOG SLEEP_LOG NETSTAT_LOG NETSTAT_COUNT_FILE NETSTAT_MODE
+export SERVICE_LOG LOGGER_LOG SLEEP_LOG NETSTAT_LOG NETSTAT_COUNT_FILE NETSTAT_MODE
 
 reset_fake_netstat() {
   NETSTAT_MODE="$1"
@@ -145,7 +147,7 @@ reset_fake_netstat() {
 
 reset_restart_state() {
   rm -rf "$STATE_DIR"
-  rm -f "$SERVICE_LOG"
+  rm -f "$SERVICE_LOG" "$LOGGER_LOG"
   RESTART_DEFERRAL_ATTEMPTS=0
   set_peer_attr count router1 1
   set_peer_attr state router1 relayed
@@ -166,6 +168,8 @@ assert_eq "active traffic does not write cooldown state" \
   "missing" "$([ -f "$NEXT_RESTART_FILE" ] && cat "$NEXT_RESTART_FILE" || printf 'missing')"
 assert_eq "active traffic increments global deferral attempts" \
   "1" "$RESTART_DEFERRAL_ATTEMPTS"
+assert_contains "active traffic logs defer decision summary" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "Restart decision: peer=router1 count=2/2 cooldown=allowed deferral=busy attempts=1/2"
 assert_eq "deferral samples over configured interval" \
   "30" "$(cat "$SLEEP_LOG")"
 assert_contains "deferral samples configured interface" \
@@ -173,30 +177,43 @@ assert_contains "deferral samples configured interface" \
 
 reset_fake_netstat quiet
 SERVICE_LOG="${tmpdir}/service-quiet.log"
+LOGGER_LOG="${tmpdir}/logger-quiet.log"
 export SERVICE_LOG
+export LOGGER_LOG
 handle_relayed router1
 assert_contains "quiet traffic allows restart" \
   "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
 assert_file_exists "quiet traffic writes cooldown state" "$NEXT_RESTART_FILE"
 assert_eq "quiet traffic resets deferral attempts" \
   "0" "$RESTART_DEFERRAL_ATTEMPTS"
+logger_log="$(cat "$LOGGER_LOG" 2>/dev/null)"
+assert_contains "quiet traffic logs selected cooldown" \
+  "$logger_log" "Restart cooldown selected: cooldown=900s next_allowed_epoch=100900 range=(min=900s,max=900s)"
+assert_contains "quiet traffic logs restart decision summary" \
+  "$logger_log" "Restart decision: peer=router1 count=3/2 cooldown=selected selected=900s next_allowed_epoch=100900 deferral=quiet action=restart"
 
 reset_restart_state
 mkdir -p "$STATE_DIR" || exit 1
 printf '%s\n' 100500 > "$NEXT_RESTART_FILE"
 reset_fake_netstat active
 SERVICE_LOG="${tmpdir}/service-cooldown.log"
+LOGGER_LOG="${tmpdir}/logger-cooldown.log"
 export SERVICE_LOG
+export LOGGER_LOG
 handle_relayed router1
 assert_eq "cooldown suppresses restart before deferral" \
   "missing" "$([ -f "$SERVICE_LOG" ] && cat "$SERVICE_LOG" || printf 'missing')"
 assert_eq "cooldown suppresses activity sampling" \
   "missing" "$([ -f "$NETSTAT_LOG" ] && cat "$NETSTAT_LOG" || printf 'missing')"
+assert_contains "cooldown logs suppress decision summary" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "Restart decision: peer=router1 count=2/2 cooldown=blocked remaining=500s deferral=not_checked action=suppress"
 
 reset_restart_state
 reset_fake_netstat malformed
 SERVICE_LOG="${tmpdir}/service-malformed.log"
+LOGGER_LOG="${tmpdir}/logger-malformed.log"
 export SERVICE_LOG
+export LOGGER_LOG
 handle_relayed router1
 assert_contains "malformed activity output proceeds with restart" \
   "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
@@ -205,7 +222,9 @@ assert_file_exists "malformed activity output writes cooldown state" "$NEXT_REST
 reset_restart_state
 reset_fake_netstat missing
 SERVICE_LOG="${tmpdir}/service-missing.log"
+LOGGER_LOG="${tmpdir}/logger-missing.log"
 export SERVICE_LOG
+export LOGGER_LOG
 handle_relayed router1
 assert_contains "missing interface proceeds with restart" \
   "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
@@ -213,7 +232,9 @@ assert_contains "missing interface proceeds with restart" \
 reset_restart_state
 reset_fake_netstat active
 SERVICE_LOG="${tmpdir}/service-limit.log"
+LOGGER_LOG="${tmpdir}/logger-limit.log"
 export SERVICE_LOG
+export LOGGER_LOG
 RESTART_DEFERRAL_ATTEMPTS=2
 handle_relayed router1
 assert_contains "max deferrals proceeds with restart" \
