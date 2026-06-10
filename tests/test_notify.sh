@@ -17,6 +17,7 @@ mkdir -p "$fakebin" || exit 1
 
 cat > "${fakebin}/logger" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >> "$LOGGER_LOG"
 exit 0
 EOF
 
@@ -46,14 +47,16 @@ export PATH
 
 CURL_ARG_LOG="${tmpdir}/curl.args"
 CURL_CONFIG_COPY="${tmpdir}/curl.conf"
-export CURL_ARG_LOG CURL_CONFIG_COPY
+LOGGER_LOG="${tmpdir}/logger.log"
+export CURL_ARG_LOG CURL_CONFIG_COPY LOGGER_LOG
 
 DEBUG=0
 CURL_TIMEOUT=10
+NOTIFY_PROVIDER="pushover"
 PUSHOVER_TOKEN="secret-token"
 PUSHOVER_USER="secret-user"
 
-assert_success "notify succeeds with fake curl" notify "router1 restarted"
+assert_success "notify dispatches pushover with fake curl" notify "router1 restarted"
 
 curl_args="$(cat "$CURL_ARG_LOG")"
 curl_config="$(cat "$CURL_CONFIG_COPY")"
@@ -63,3 +66,27 @@ assert_not_contains "Pushover user is not passed in curl argv" "$curl_args" "sec
 assert_contains "curl config contains Pushover token" "$curl_config" "token=secret-token"
 assert_contains "curl config contains Pushover user" "$curl_config" "user=secret-user"
 assert_contains "curl config contains notification message" "$curl_config" "message=router1 restarted"
+
+rm -f "$CURL_ARG_LOG" "$CURL_CONFIG_COPY" "$LOGGER_LOG"
+NOTIFY_PROVIDER="none"
+assert_success "notify provider none skips curl" notify "router1 restarted"
+assert_eq "notify provider none does not call curl" \
+  "missing" "$([ -f "$CURL_ARG_LOG" ] && cat "$CURL_ARG_LOG" || printf 'missing')"
+assert_contains "notify provider none logs skip" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "Notification skipped: provider is disabled"
+
+rm -f "$CURL_ARG_LOG" "$CURL_CONFIG_COPY" "$LOGGER_LOG"
+NOTIFY_PROVIDER=""
+assert_success "blank notify provider skips curl" notify "router1 restarted"
+assert_eq "blank notify provider does not call curl" \
+  "missing" "$([ -f "$CURL_ARG_LOG" ] && cat "$CURL_ARG_LOG" || printf 'missing')"
+
+rm -f "$CURL_ARG_LOG" "$CURL_CONFIG_COPY" "$LOGGER_LOG"
+NOTIFY_PROVIDER="telegram"
+notify "router1 restarted" >/dev/null 2>&1
+rc=$?
+assert_eq "unsupported notify provider fails" "1" "$rc"
+assert_eq "unsupported notify provider does not call curl" \
+  "missing" "$([ -f "$CURL_ARG_LOG" ] && cat "$CURL_ARG_LOG" || printf 'missing')"
+assert_contains "unsupported notify provider logs failure" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "Notification failed: unsupported provider 'telegram'"

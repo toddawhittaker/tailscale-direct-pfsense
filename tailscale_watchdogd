@@ -4,7 +4,7 @@
 #
 # Foreground daemon that checks selected Tailscale peers once per interval.
 # If a peer is relayed for FAIL_THRESHOLD consecutive checks, restart
-# tailscaled and pfsense_tailscaled, then send a Pushover notification.
+# tailscaled and pfsense_tailscaled, then send an optional notification.
 #
 # Documentation:
 #   https://github.com/toddawhittaker/tailscale-direct-pfsense
@@ -27,8 +27,8 @@
 #   - The config file must be owned by root and not readable, writable, or
 #     executable by group or world (mode 0600 recommended).  Permissions are
 #     verified with stat(1) before sourcing.
-#   - Pushover credentials are passed to curl through a config stream on stdin,
-#     not as process arguments.
+#   - Notification credentials are passed to curl through a config stream on
+#     stdin, not as process arguments.
 #   - Peer names are validated to contain only hostname-safe characters before
 #     being passed to tailscale ping, and checked for post-sanitization
 #     collisions that would cause two peers to share the same state counter.
@@ -44,6 +44,7 @@ DOCS_URL="https://github.com/toddawhittaker/tailscale-direct-pfsense"
 CONFIG_FILE="/usr/local/etc/tailscale_watchdog.conf"
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
+NOTIFY_PROVIDER="pushover"
 PEERS="router1 router2"
 CHECK_INTERVAL=60
 FAIL_THRESHOLD=5
@@ -315,6 +316,18 @@ validate_config() {
     echo "CURL_TIMEOUT must be a positive integer: $CURL_TIMEOUT" >&2
     exit 2
   fi
+  case "$NOTIFY_PROVIDER" in
+    ''|none|pushover)
+      ;;
+    -*|*[!A-Za-z0-9._-]*)
+      echo "Invalid notification provider (contains shell-unsafe characters): ${NOTIFY_PROVIDER}" >&2
+      exit 2
+      ;;
+    *)
+      echo "Unsupported notification provider: ${NOTIFY_PROVIDER}" >&2
+      exit 2
+      ;;
+  esac
   if ! is_bool "$RESTART_DEFERRAL_ENABLED"; then
     echo "RESTART_DEFERRAL_ENABLED must be 0 or 1: $RESTART_DEFERRAL_ENABLED" >&2
     exit 2
@@ -371,16 +384,40 @@ validate_config() {
 # curl_config_escape VALUE
 #
 # Escapes backslashes and double quotes for values written to curl's -K
-# config stream.  This keeps Pushover credentials out of process arguments.
+# config stream.  This keeps notification secrets out of process arguments.
 curl_config_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 # notify MESSAGE
 #
-# Sends an optional Pushover notification.  Missing credentials are a clean
-# no-op; curl failures are logged but do not alter restart state.
+# Dispatches an optional notification through the configured provider.  A blank
+# provider or "none" is a clean no-op.  Provider failures are logged but do not
+# alter restart state.
 notify() {
+  message="$1"
+
+  case "$NOTIFY_PROVIDER" in
+    ''|none)
+      log_msg "Notification skipped: provider is disabled"
+      return 0
+      ;;
+    pushover)
+      notify_pushover "$message"
+      return $?
+      ;;
+    *)
+      log_msg "Notification failed: unsupported provider '${NOTIFY_PROVIDER}'"
+      return 1
+      ;;
+  esac
+}
+
+# notify_pushover MESSAGE
+#
+# Sends a Pushover notification using curl's config stream.  Missing Pushover
+# credentials are treated as disabled notifications for backward compatibility.
+notify_pushover() {
   message="$1"
 
   if [ -z "$PUSHOVER_TOKEN" ] || [ -z "$PUSHOVER_USER" ]; then

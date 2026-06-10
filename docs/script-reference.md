@@ -4,7 +4,7 @@ This document explains the role of each script and the safety behavior it owns.
 
 ## `tailscale_watchdogd`
 
-The daemon is foreground-only. It validates the config file, checks peers, classifies paths, manages in-memory peer counters, applies cooldown and deferral gates, restarts configured services, and sends optional Pushover notifications.
+The daemon is foreground-only. It validates the config file, checks peers, classifies paths, manages in-memory peer counters, applies cooldown and deferral gates, restarts configured services, and sends optional provider-based notifications.
 
 Why it stays foreground:
 
@@ -16,10 +16,12 @@ Important safety choices:
 
 - config is sourced only after root ownership and private permissions are verified;
 - peer and service names are validated before command use;
-- Pushover credentials are passed to `curl` through config on stdin, not process arguments;
+- notification secrets are passed to `curl` through config on stdin, not process arguments;
 - cooldown state is written before restart attempts;
 - unknown ping output breaks the relayed sequence;
 - healthy checks avoid persistent state writes.
+
+Notifications use a small provider dispatcher. `notify` remains the restart-flow entry point, and provider-specific functions such as `notify_pushover` own their own secret handling and curl payload shape. New providers should add validation, docs, and fake-command tests without changing restart flow.
 
 ## `tailscale_watchdog`
 

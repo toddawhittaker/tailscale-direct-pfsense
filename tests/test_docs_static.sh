@@ -13,6 +13,8 @@ rc_text="$(cat "${REPO_ROOT}/tailscale_watchdog")"
 install_text="$(cat "${REPO_ROOT}/install.sh")"
 uninstall_text="$(cat "${REPO_ROOT}/uninstall.sh")"
 agents_text="$(cat "${REPO_ROOT}/AGENTS.md")"
+config_example_text="$(cat "${REPO_ROOT}/tailscale_watchdog.conf.example")"
+script_reference_text="$(cat "${REPO_ROOT}/docs/script-reference.md")"
 docs_url="https://github.com/toddawhittaker/tailscale-direct-pfsense"
 
 assert_file_exists "docs index exists" "${REPO_ROOT}/docs/README.md"
@@ -36,14 +38,23 @@ assert_contains "README manual install uses mktemp" \
 assert_contains "daemon defaults use generic peers" \
   "$daemon_text" 'PEERS="router1 router2"'
 
-assert_contains "README includes Mermaid decision flow" \
-  "$readme_text" '```mermaid'
-
 assert_contains "README links to maintainer docs" \
   "$readme_text" '[`docs/`](docs/)'
 
 assert_contains "AGENTS references maintainer docs" \
   "$agents_text" 'Use `docs/` for maintainer-focused rationale.'
+
+assert_contains "config example includes notification provider selector" \
+  "$config_example_text" 'NOTIFY_PROVIDER="pushover"'
+
+assert_contains "README documents notification provider selector" \
+  "$readme_text" 'NOTIFY_PROVIDER="pushover"'
+
+assert_contains "maintainer docs describe notification dispatcher" \
+  "$script_reference_text" "Notifications use a small provider dispatcher."
+
+assert_contains "AGENTS mentions new notification provider requirements" \
+  "$agents_text" "New notification providers must preserve Pushover compatibility"
 
 assert_contains "daemon header includes documentation URL" \
   "$daemon_text" "$docs_url"

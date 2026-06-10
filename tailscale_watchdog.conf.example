@@ -8,7 +8,15 @@
 #   chown root:wheel /usr/local/etc/tailscale_watchdog.conf
 #   chmod 0600 /usr/local/etc/tailscale_watchdog.conf
 
-# ---- Pushover notification settings ----------------------------------------
+# ---- Notification settings --------------------------------------------------
+#
+# Supported values:
+#   pushover  send notifications through Pushover
+#   none      disable notifications explicitly
+#
+# Pushover is currently the only active notification provider. Other providers
+# can be added later without changing the restart flow.
+NOTIFY_PROVIDER="pushover"
 
 PUSHOVER_TOKEN="" # Add your_pushover_application_token here to enable notifications.
 PUSHOVER_USER=""  # Add your_pushover_user_key here to enable notifications.

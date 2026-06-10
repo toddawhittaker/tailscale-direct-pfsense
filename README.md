@@ -14,7 +14,7 @@ The watchdog:
 - detects sustained relayed connectivity
 - restarts local Tailscale services after a configurable threshold
 - applies a randomized cooldown between restart attempts
-- optionally sends a Pushover notification when it restarts services
+- optionally sends a notification when it restarts services
 - runs as a pfSense/FreeBSD rc service
 
 It does not modify your Tailscale account, ACLs, routes, firewall rules, or Tailscale package installation.
@@ -72,7 +72,8 @@ vi /usr/local/etc/tailscale_watchdog.conf
 Example configuration:
 
 ```sh
-# Optional Pushover credentials. Leave empty to disable notifications.
+# Optional notifications. Pushover is currently the supported provider.
+NOTIFY_PROVIDER="pushover"
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
 
@@ -110,7 +111,7 @@ CURL_TIMEOUT=10
 
 At minimum, set `PEERS` to the Tailscale hostnames you want to monitor.
 
-If you want Pushover notifications, set both `PUSHOVER_TOKEN` and `PUSHOVER_USER`. If either is blank, notifications are skipped.
+If you want Pushover notifications, set `NOTIFY_PROVIDER="pushover"` plus both `PUSHOVER_TOKEN` and `PUSHOVER_USER`. If either Pushover value is blank, notifications are skipped. To disable notifications explicitly, set `NOTIFY_PROVIDER="none"`.
 
 Keep the config file private:
 
@@ -363,7 +364,7 @@ The quick install and uninstall commands download scripts from GitHub and run th
 
 The installer uses HTTPS GitHub URLs, but the project does not currently provide signed release artifacts.
 
-The live config file may contain Pushover credentials. Keep it owned by root and mode `0600`.
+The live config file may contain notification credentials. Keep it owned by root and mode `0600`.
 
 ## Troubleshooting
 
@@ -393,7 +394,13 @@ Common causes include:
 
 ### Notifications are not sent
 
-Check whether both values are set without printing the credentials:
+Confirm the selected provider:
+
+```sh
+grep '^NOTIFY_PROVIDER=' /usr/local/etc/tailscale_watchdog.conf
+```
+
+For Pushover, check whether both values are set without printing the credentials:
 
 ```sh
 awk -F= '

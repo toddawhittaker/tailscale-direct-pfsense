@@ -49,7 +49,7 @@ PUSHOVER_TOKEN="REDACTED"
 PUSHOVER_USER="REDACTED"
 ```
 
-Peer names may appear in normal watchdog logs and Pushover notifications by design. Treat those logs as potentially sensitive if your peer names reveal private network details.
+Peer names may appear in normal watchdog logs and notifications by design. Treat those logs as potentially sensitive if your peer names reveal private network details.
 
 ## Project Scope
 

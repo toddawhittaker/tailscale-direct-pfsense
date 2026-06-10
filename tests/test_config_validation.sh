@@ -34,6 +34,7 @@ RESTART_DEFERRAL_INTERFACE="tailscale0"
 RESTART_DEFERRAL_CHECK_SECONDS=30
 RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
+NOTIFY_PROVIDER="pushover"
 CURL_TIMEOUT=10
 ${setup}
 validate_config
@@ -80,6 +81,9 @@ expect_invalid_positive_int() {
 }
 
 run_validate "valid config passes" 0 "" ""
+run_validate "notification provider pushover passes" 0 'NOTIFY_PROVIDER="pushover"' ""
+run_validate "notification provider none passes" 0 'NOTIFY_PROVIDER="none"' ""
+run_validate "blank notification provider passes" 0 'NOTIFY_PROVIDER=""' ""
 expect_invalid_config "empty peers fail" 'PEERS=""' "PEERS must not be empty"
 
 expect_invalid_peer "peer semicolon fails" 'PEERS="router1 bad;peer"'
@@ -102,6 +106,22 @@ unset _var _value
 expect_invalid_config "restart deferral enabled rejects non-boolean" \
   'RESTART_DEFERRAL_ENABLED=abc' \
   "RESTART_DEFERRAL_ENABLED must be 0 or 1"
+
+expect_invalid_config "notification provider semicolon fails" \
+  'NOTIFY_PROVIDER="pushover;reboot"' \
+  "Invalid notification provider"
+
+expect_invalid_config "notification provider path traversal fails" \
+  'NOTIFY_PROVIDER="../pushover"' \
+  "Invalid notification provider"
+
+expect_invalid_config "notification provider leading hyphen fails" \
+  'NOTIFY_PROVIDER="-pushover"' \
+  "Invalid notification provider"
+
+expect_invalid_config "unsupported notification provider fails" \
+  'NOTIFY_PROVIDER="telegram"' \
+  "Unsupported notification provider"
 
 expect_invalid_config "restart deferral interface empty fails" \
   'RESTART_DEFERRAL_INTERFACE=""' \

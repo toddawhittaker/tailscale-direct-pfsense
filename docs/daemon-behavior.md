@@ -66,4 +66,4 @@ The daemon logs notable transitions, suppression decisions, restart decisions, r
 
 It does not log every successful direct check. Quiet logs during healthy operation are intentional.
 
-Peer names are safe to log and send in Pushover notifications. Tokens and user keys are not.
+Peer names are safe to log and send in notifications. Provider secrets such as tokens, user keys, and webhook URLs are not.

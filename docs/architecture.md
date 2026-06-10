@@ -19,7 +19,7 @@ The installer places:
 - `/usr/local/etc/tailscale_watchdog.conf.example`: reference config.
 - `/usr/local/etc/tailscale_watchdog.conf`: private live config, created only when missing.
 
-The live config may contain Pushover credentials, so it is expected to be `root:wheel` and mode `0600`. The daemon refuses to source configs with unsafe ownership or permissions.
+The live config may contain notification credentials, so it is expected to be `root:wheel` and mode `0600`. The daemon refuses to source configs with unsafe ownership or permissions.
 
 ## Runtime Model
 
@@ -33,6 +33,8 @@ Restart impact is global to local Tailscale connectivity, even when one peer tri
 - failed restart leaves counters intact so retry can happen after cooldown.
 
 The rc.d wrapper runs the daemon in the background and writes `/var/run/tailscale_watchdog.pid`. It validates pidfile contents before signaling so corrupt or malicious pidfile data cannot be passed to `kill`.
+
+Notifications are dispatched through a provider selector. Pushover is the current provider, and the restart flow calls only the generic `notify` entry point. Future providers should be added behind that dispatch boundary so restart behavior, cooldown behavior, and service control do not need to change.
 
 ## Install And Upgrade Model
 
