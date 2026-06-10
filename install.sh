@@ -158,6 +158,11 @@ fi
 # The cleanup trap removes it on exit regardless of success or failure.
 STAGE_DIR=""
 
+# cleanup
+#
+# Removes the private download staging directory on any exit path.  The
+# installer never keeps staged downloads after installation because they were
+# fetched as root and are no longer needed once copied into place.
 cleanup() {
   if [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ]; then
     rm -rf "$STAGE_DIR"
@@ -167,24 +172,43 @@ trap cleanup EXIT
 
 # ---- Helper functions ------------------------------------------------------
 
+# die MESSAGE...
+#
+# Prints a fatal installer error and exits.  Use this for any condition that
+# would leave installation incomplete or unsafe if execution continued.
 die() {
   printf '\n[ERROR] %s\n' "$*" >&2
   printf '[ERROR] Installation aborted.\n' >&2
   exit 1
 }
 
+# info MESSAGE...
+#
+# Prints an informational operator-facing line.  This deliberately writes to
+# stdout because installer progress is intended to be visible.
 info() {
   printf '[INFO]  %s\n' "$*"
 }
 
+# ok MESSAGE...
+#
+# Prints a successful step.  Keep these messages short because they form the
+# operator's installation transcript.
 ok() {
   printf '[OK]    %s\n' "$*"
 }
 
+# warn MESSAGE...
+#
+# Prints a non-fatal condition that the operator should review.  Warnings do
+# not abort installation because the checked condition is advisory.
 warn() {
   printf '[WARN]  %s\n' "$*"
 }
 
+# header TITLE
+#
+# Prints a section heading for interactive readability.
 header() {
   printf '\n--- %s\n' "$*"
 }
@@ -367,6 +391,11 @@ EOF
 
 # ---- Preflight checks ------------------------------------------------------
 
+# preflight_checks
+#
+# Verifies that the installer is running in the expected pfSense/root context
+# and that required local Tailscale tools exist.  Tailscale connection status
+# is warning-only because the operator may install before authenticating.
 preflight_checks() {
   header "Preflight checks"
 
@@ -423,6 +452,11 @@ preflight_checks() {
 
 # ---- Download files --------------------------------------------------------
 
+# download_files
+#
+# Creates the private staging directory and downloads all installable files
+# into it.  Validation and installation intentionally operate only on staged
+# files so network content is checked before touching live paths.
 download_files() {
   header "Downloading files (VERSION=${VERSION})"
 
@@ -437,6 +471,11 @@ download_files() {
 
 # ---- Validate downloaded files ---------------------------------------------
 
+# validate_files
+#
+# Runs syntax and sanity checks against staged downloads before installation.
+# This protects against truncated downloads and obvious wrong-file responses,
+# but it is not a cryptographic trust mechanism.
 validate_files() {
   header "Validating downloaded files"
 
@@ -458,6 +497,11 @@ validate_files() {
 # Called after validate_files so that we only warn about a running service
 # if we are actually about to install valid files.
 
+# warn_if_service_running
+#
+# Detects an active watchdog service during upgrade and warns that the
+# installer will not restart it.  The script intentionally leaves restart
+# timing to the operator after config review.
 warn_if_service_running() {
   header "Service status check"
 
@@ -474,6 +518,11 @@ warn_if_service_running() {
 
 # ---- Install files ---------------------------------------------------------
 
+# install_files
+#
+# Installs daemon, rc wrapper, and example config, then either creates a
+# starter live config or preserves the existing one while enforcing safe
+# metadata.  Existing live config contents are never replaced.
 install_files() {
   header "Installing files"
 
@@ -519,6 +568,11 @@ install_files() {
 
 # ---- rc.d dependency check -------------------------------------------------
 
+# check_rc_deps
+#
+# Inspects the installed rc wrapper's REQUIRE tokens and warns if service
+# dependencies do not appear to be provided by local rc.d scripts.  Missing
+# tokens are advisory because pfSense package layouts can vary.
 check_rc_deps() {
   header "Checking rc.d PROVIDE tokens for REQUIRE dependencies"
 
@@ -558,6 +612,11 @@ check_rc_deps() {
 
 # ---- Next steps ------------------------------------------------------------
 
+# print_next_steps
+#
+# Prints the post-install operator checklist.  The installer does not enable
+# or start the service, so these steps are the handoff point to manual review,
+# direct daemon testing, and explicit service enablement.
 print_next_steps() {
   header "Installation complete"
 
@@ -649,6 +708,11 @@ EOF
 
 # ---- Main ------------------------------------------------------------------
 
+# main
+#
+# Runs the installer phases in dependency order: preflight, download,
+# validation, service-status warning, atomic install, rc.d dependency check,
+# and final operator guidance.
 main() {
   printf '\n'
   printf '%s\n' "============================================================"

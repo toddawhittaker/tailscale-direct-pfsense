@@ -12,7 +12,14 @@ daemon_text="$(cat "${REPO_ROOT}/tailscale_watchdogd")"
 rc_text="$(cat "${REPO_ROOT}/tailscale_watchdog")"
 install_text="$(cat "${REPO_ROOT}/install.sh")"
 uninstall_text="$(cat "${REPO_ROOT}/uninstall.sh")"
+agents_text="$(cat "${REPO_ROOT}/AGENTS.md")"
 docs_url="https://github.com/toddawhittaker/tailscale-direct-pfsense"
+
+assert_file_exists "docs index exists" "${REPO_ROOT}/docs/README.md"
+assert_file_exists "architecture docs exist" "${REPO_ROOT}/docs/architecture.md"
+assert_file_exists "daemon behavior docs exist" "${REPO_ROOT}/docs/daemon-behavior.md"
+assert_file_exists "script reference docs exist" "${REPO_ROOT}/docs/script-reference.md"
+assert_file_exists "testing docs exist" "${REPO_ROOT}/docs/testing.md"
 
 assert_not_contains "README does not recommend printing Pushover secrets" \
   "$readme_text" "grep '^PUSHOVER_'"
@@ -28,6 +35,15 @@ assert_contains "README manual install uses mktemp" \
 
 assert_contains "daemon defaults use generic peers" \
   "$daemon_text" 'PEERS="router1 router2"'
+
+assert_contains "README includes Mermaid decision flow" \
+  "$readme_text" '```mermaid'
+
+assert_contains "README links to maintainer docs" \
+  "$readme_text" '[`docs/`](docs/)'
+
+assert_contains "AGENTS references maintainer docs" \
+  "$agents_text" 'Use `docs/` for maintainer-focused rationale.'
 
 assert_contains "daemon header includes documentation URL" \
   "$daemon_text" "$docs_url"

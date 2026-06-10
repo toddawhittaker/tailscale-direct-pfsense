@@ -127,6 +127,12 @@ kill_and_wait() {
   return 0
 }
 
+# tailscale_watchdog_start
+#
+# rc.d start hook.  Refuses to launch a second daemon when a valid pidfile
+# points to a live process, removes invalid/stale pidfiles, starts the
+# foreground daemon in the background, writes the new pidfile, and reports
+# early startup failures captured from daemon stderr/stdout.
 tailscale_watchdog_start() {
   if [ -f "$pidfile" ]; then
     pid="$(cat "$pidfile" 2>/dev/null)"
@@ -195,6 +201,11 @@ tailscale_watchdog_start() {
   return 0
 }
 
+# tailscale_watchdog_stop
+#
+# rc.d stop hook.  Validates the pidfile before signaling, treats absent or
+# stale pidfiles as already stopped, sends TERM first, and escalates to KILL
+# only after a bounded wait.
 tailscale_watchdog_stop() {
   if [ ! -f "$pidfile" ]; then
     echo "${name} is not running"
@@ -257,11 +268,20 @@ tailscale_watchdog_stop() {
   return 0
 }
 
+# tailscale_watchdog_restart
+#
+# rc.d restart hook.  Requires a clean stop before starting so a failed stop
+# cannot create two watchdog daemons against the same config and pidfile.
 tailscale_watchdog_restart() {
   tailscale_watchdog_stop || return 1
   tailscale_watchdog_start || return 1
 }
 
+# tailscale_watchdog_status
+#
+# rc.d status hook.  Reports running state only when the pidfile contains a
+# valid PID and that process still exists; corrupt or stale pidfiles are
+# surfaced as failures.
 tailscale_watchdog_status() {
   if [ ! -f "$pidfile" ]; then
     echo "${name} is not running"

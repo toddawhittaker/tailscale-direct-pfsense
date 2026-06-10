@@ -96,6 +96,10 @@ SLEEP_PID=""
 
 # ---- Utility functions -----------------------------------------------------
 
+# usage
+#
+# Prints command-line usage to stderr.  This function does not exit so callers
+# can choose the correct exit status for parse errors or help output.
 usage() {
   cat >&2 <<EOF
 Usage: $0 [-t] [-1] [-d] [-f config_file] [-i seconds] [-n threshold] [-c ping_count]
@@ -110,6 +114,10 @@ Options:
 EOF
 }
 
+# is_positive_int VALUE
+#
+# Returns 0 for a non-empty decimal integer greater than zero.  Used for
+# config and CLI validation before values reach arithmetic contexts.
 is_positive_int() {
   case "$1" in
     ''|*[!0-9]*)
@@ -119,6 +127,9 @@ is_positive_int() {
   [ "$1" -gt 0 ] 2>/dev/null
 }
 
+# is_bool VALUE
+#
+# Returns 0 only for the config booleans accepted by this script: 0 or 1.
 is_bool() {
   case "$1" in
     0|1)
@@ -128,12 +139,11 @@ is_bool() {
   return 1
 }
 
-# log_msg and debug_msg write exclusively to stderr (via logger and/or the
-# debug printf).  They must never write to stdout because both functions are
-# called from within command substitutions (e.g. cooldown_remaining,
-# next_restart_epoch).  Any stdout output from those contexts would be
-# captured into the calling variable rather than reaching the terminal,
-# corrupting the return value.
+# log_msg MESSAGE...
+#
+# Writes operational logs through logger(1), and mirrors them to stderr in
+# debug mode.  This must never write to stdout because it is called from
+# functions that may run inside command substitutions.
 log_msg() {
   logger -t "$TAG" "$*"
   if [ "$DEBUG" -eq 1 ]; then
@@ -141,6 +151,10 @@ log_msg() {
   fi
 }
 
+# debug_msg MESSAGE...
+#
+# Writes debug-only diagnostics to stderr.  Keep stdout clean so callers can
+# safely capture function return values such as path classifications.
 debug_msg() {
   if [ "$DEBUG" -eq 1 ]; then
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
@@ -209,6 +223,10 @@ config_is_safe_to_source() {
   return 0
 }
 
+# load_config_file FILE
+#
+# Verifies and sources the live config, then restores the known-safe PATH so
+# config content cannot alter command lookup for later privileged operations.
 load_config_file() {
   file="$1"
 
@@ -227,6 +245,11 @@ load_config_file() {
   return 0
 }
 
+# validate_config
+#
+# Validates sourced config values after CLI overrides are applied.  This is
+# the boundary that turns shell-sourced text into constrained peer names,
+# service names, intervals, cooldowns, and deferral settings.
 validate_config() {
   if [ -z "$PEERS" ]; then
     echo "PEERS must not be empty" >&2
@@ -345,10 +368,18 @@ validate_config() {
   unset _vsvc _noglob_was_set
 }
 
+# curl_config_escape VALUE
+#
+# Escapes backslashes and double quotes for values written to curl's -K
+# config stream.  This keeps Pushover credentials out of process arguments.
 curl_config_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+# notify MESSAGE
+#
+# Sends an optional Pushover notification.  Missing credentials are a clean
+# no-op; curl failures are logged but do not alter restart state.
 notify() {
   message="$1"
 
@@ -380,10 +411,17 @@ notify() {
 
 # ---- Per-peer variable helpers ---------------------------------------------
 
+# safe_peer_name PEER
+#
+# Converts a validated peer name into a shell-variable-safe suffix.  The
+# validator rejects collisions before this helper is used for state storage.
 safe_peer_name() {
   printf '%s' "$1" | sed 's/[^A-Za-z0-9_]/_/g'
 }
 
+# peer_var ATTR PEER
+#
+# Builds the dynamic shell variable name used for one per-peer attribute.
 peer_var() {
   attr="$1"
   peer="$2"
@@ -391,6 +429,10 @@ peer_var() {
   printf 'tsw_%s_%s' "$attr" "$safe"
 }
 
+# get_peer_attr ATTR PEER DEFAULT
+#
+# Reads a dynamic per-peer variable, returning DEFAULT when unset or empty.
+# Peer names are validated before use so the eval target is controlled.
 get_peer_attr() {
   attr="$1"
   peer="$2"
@@ -404,6 +446,10 @@ get_peer_attr() {
   fi
 }
 
+# set_peer_attr ATTR PEER VALUE
+#
+# Writes a dynamic per-peer variable.  Keep all callers behind config
+# validation so ATTR/PEER cannot become arbitrary shell code.
 set_peer_attr() {
   attr="$1"
   peer="$2"
@@ -412,6 +458,10 @@ set_peer_attr() {
   eval "${var}=\$value"
 }
 
+# reset_all_peer_state_after_restart
+#
+# Resets every peer after a successful restart and clears global deferral
+# state.  Restart impact is global, so all peer counters are reset together.
 reset_all_peer_state_after_restart() {
   _noglob_was_set=0
   case $- in
@@ -430,6 +480,11 @@ reset_all_peer_state_after_restart() {
   unset _noglob_was_set
 }
 
+# reset_restart_deferral_if_no_threshold
+#
+# Clears global deferral attempts when no peer remains at or above the relay
+# threshold.  This prevents stale busy-traffic deferrals from affecting a
+# later, unrelated relay episode.
 reset_restart_deferral_if_no_threshold() {
   _noglob_was_set=0
   case $- in
@@ -539,6 +594,11 @@ next_restart_epoch() {
   fi
 }
 
+# cooldown_remaining
+#
+# Prints the number of seconds until the next restart attempt is allowed, or
+# 0 when no valid active cooldown exists.  Handles expired cooldowns and logs
+# notable clock skew without blocking restart decisions.
 cooldown_remaining() {
   now="$(date '+%s')"
   next="$(next_restart_epoch "$now")"
@@ -571,6 +631,10 @@ cooldown_remaining() {
 # deferral implementation samples interface-wide byte counters rather than
 # only checking the peer that happened to reach the relay threshold.
 
+# watchdog_sleep SECONDS
+#
+# Sleeps in a child process and records its PID so signal handling can
+# interrupt long main-loop or deferral sleeps promptly.
 watchdog_sleep() {
   seconds="$1"
   sleep "$seconds" &
@@ -581,6 +645,10 @@ watchdog_sleep() {
   return "$rc"
 }
 
+# parse_interface_bytes IFACE
+#
+# Reads netstat -ibn style output on stdin and prints the total Ibytes+Obytes
+# for IFACE.  Returns non-zero when the interface or byte columns are missing.
 parse_interface_bytes() {
   iface="$1"
 
@@ -614,6 +682,11 @@ parse_interface_bytes() {
   '
 }
 
+# get_interface_bytes IFACE
+#
+# Reads current interface byte counters using FreeBSD netstat and delegates
+# parsing to parse_interface_bytes.  A non-zero return means deferral cannot
+# safely determine activity.
 get_interface_bytes() {
   iface="$1"
 
@@ -625,6 +698,12 @@ get_interface_bytes() {
   printf '%s\n' "$output" | parse_interface_bytes "$iface"
 }
 
+# should_defer_restart PEER COUNT
+#
+# Returns 0 when a restart should be deferred because global Tailscale
+# interface traffic appears active.  Returns 1 when restart should proceed,
+# including disabled deferral, quiet traffic, max attempts, and fail-open
+# activity-check errors.  LAST_RESTART_DEFERRAL_* globals describe the result.
 should_defer_restart() {
   reason_peer="$1"
   reason_count="$2"
@@ -688,6 +767,12 @@ should_defer_restart() {
   return 0
 }
 
+# mark_restart_attempt
+#
+# Atomically writes the next allowed restart epoch before service restart
+# commands run.  This consumes cooldown for both successful and failed restart
+# attempts, preventing tight retry loops.  LAST_RESTART_* globals expose the
+# selected cooldown for later summary logging.
 mark_restart_attempt() {
   tmp_next=""
   LAST_RESTART_COOLDOWN=""
@@ -759,6 +844,11 @@ mark_restart_attempt() {
 #   unknown:
 #     No usable pong path was found (timeout, peer offline, parse failure).
 
+# classify_ping_output
+#
+# Reads tailscale ping output from stdin and prints exactly one classification:
+# direct, relayed, or unknown.  Direct wins if mixed output contains any direct
+# pong because Tailscale can upgrade from DERP to direct during a ping run.
 classify_ping_output() {
   awk '
     /^pong from / && / via / {
@@ -799,6 +889,11 @@ check_peer_path() {
 
 # ---- Restart handling ------------------------------------------------------
 
+# restart_tailscale_services PEER COUNT
+#
+# Marks cooldown, restarts each configured service, sends optional notification,
+# and resets all peer state only if every service restart succeeds.  On failure,
+# counters are preserved so retry can happen after cooldown.
 restart_tailscale_services() {
   reason_peer="$1"
   reason_count="$2"
@@ -848,6 +943,11 @@ restart_tailscale_services() {
   return 1
 }
 
+# maybe_restart_for_peer PEER COUNT
+#
+# Applies threshold, test-mode, cooldown, and deferral gates for one peer that
+# has just been classified relayed.  Emits the compact restart-decision summary
+# used for operational troubleshooting.
 maybe_restart_for_peer() {
   peer="$1"
   count="$2"
@@ -903,6 +1003,10 @@ maybe_restart_for_peer() {
 
 # ---- Per-peer state machine ------------------------------------------------
 
+# handle_direct PEER
+#
+# Handles a direct classification by clearing the peer's relay counter and
+# threshold marker, then clearing global deferral state if no threshold remains.
 handle_direct() {
   peer="$1"
   count="$(get_peer_attr count "$peer" 0)"
@@ -925,6 +1029,10 @@ handle_direct() {
   reset_restart_deferral_if_no_threshold
 }
 
+# handle_relayed PEER
+#
+# Handles a relayed classification by incrementing the peer's consecutive
+# relayed count and then evaluating restart eligibility.
 handle_relayed() {
   peer="$1"
   count="$(get_peer_attr count "$peer" 0)"
@@ -935,6 +1043,10 @@ handle_relayed() {
   maybe_restart_for_peer "$peer" "$count"
 }
 
+# handle_unknown PEER
+#
+# Handles unclassifiable ping output by breaking the consecutive-relay
+# sequence.  Unknown is deliberately not evidence for restart.
 handle_unknown() {
   peer="$1"
   count="$(get_peer_attr count "$peer" 0)"
@@ -952,6 +1064,10 @@ handle_unknown() {
   reset_restart_deferral_if_no_threshold
 }
 
+# check_peer PEER
+#
+# Runs one peer through ping classification and dispatches to the state
+# transition handler for the resulting class.
 check_peer() {
   peer="$1"
   class="$(check_peer_path "$peer")"
@@ -968,6 +1084,10 @@ check_peer() {
   esac
 }
 
+# check_all_peers
+#
+# Checks every configured peer once.  Globbing is disabled around PEERS word
+# splitting so peer names are treated as literal configured tokens.
 check_all_peers() {
   _noglob_was_set=0
   case $- in
@@ -985,6 +1105,10 @@ check_all_peers() {
 
 # ---- Signal handling -------------------------------------------------------
 
+# handle_shutdown
+#
+# Handles TERM/INT by logging shutdown and interrupting any active sleep before
+# exiting.  This keeps rc.d stop responsive even during long intervals.
 handle_shutdown() {
   log_msg "Daemon stopping"
   if [ -n "$SLEEP_PID" ]; then
@@ -994,6 +1118,11 @@ handle_shutdown() {
   exit 0
 }
 
+# main ARGS...
+#
+# Loads config, applies CLI overrides, validates final settings, installs
+# signal handlers, logs startup, and runs either one check cycle or the daemon
+# loop.  Kept out of test mode so tests can source functions safely.
 main() {
   # ---- Config path pre-scan ------------------------------------------------
 

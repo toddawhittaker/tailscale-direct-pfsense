@@ -4,7 +4,7 @@
 
 `tailscale-direct-pfsense` is a small pfSense/FreeBSD watchdog for Tailscale direct connectivity.
 
-Primary repo files: `tailscale_watchdogd`, `tailscale_watchdog` rc.d wrapper, `tailscale_watchdog.conf.example`, `install.sh`, `uninstall.sh`, `README.md`, `LICENSE`.
+Primary repo files: `tailscale_watchdogd`, `tailscale_watchdog` rc.d wrapper, `tailscale_watchdog.conf.example`, `install.sh`, `uninstall.sh`, `README.md`, `docs/`, `LICENSE`.
 
 * `/usr/local/sbin/tailscale_watchdogd`
 * `/usr/local/etc/rc.d/tailscale_watchdog`
@@ -132,6 +132,8 @@ Before committing: show the diff, explain risk, state tests run, keep commits fo
 ## Documentation / Release
 
 README changes should be end-user oriented: purpose, requirements, quick and review-first install, configuration, testing before enabling, enable/start, update, uninstall, security, troubleshooting, AI assistance disclosure, and MIT note. Do not turn README into an internal audit trail.
+
+Use `docs/` for maintainer-focused rationale. Before changing daemon behavior, script safety behavior, installer/uninstaller behavior, or tests, read the relevant `docs/` page and update it when the rationale changes.
 
 For releases: use SemVer-style tags such as `v1.0.0`, prefer annotated tags, require clean `git status`, run all `sh -n` checks, and write user-facing release notes. Extra release assets are not required unless requested.
 

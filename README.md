@@ -151,6 +151,32 @@ The watchdog samples total received and sent bytes on `RESTART_DEFERRAL_INTERFAC
 
 A deferred restart does not consume the randomized restart cooldown. The cooldown is written only immediately before an actual restart attempt. If interface activity detection is unavailable or returns unexpected output, the watchdog logs the problem and proceeds with the restart decision.
 
+### Watchdog decision flow
+
+This is the high-level restart decision path for each peer check:
+
+```mermaid
+flowchart TD
+  A[Check peer with tailscale ping] --> B{Path classification}
+  B -->|direct| C[Reset peer relay counter]
+  B -->|unknown| D[Break relay sequence]
+  B -->|relayed| E[Increment peer relay counter]
+  E --> F{Counter >= FAIL_THRESHOLD?}
+  F -->|no| G[Wait for next check]
+  F -->|yes| H{Test mode?}
+  H -->|yes| I[Log would restart]
+  H -->|no| J{Cooldown active?}
+  J -->|yes| K[Suppress restart]
+  J -->|no| L{Deferral enabled and traffic active?}
+  L -->|yes| M[Defer restart without writing cooldown]
+  L -->|no / unavailable / max attempts| N[Write next restart cooldown]
+  N --> O[Restart configured services]
+  O -->|success| P[Reset all peer counters]
+  O -->|failure| Q[Keep counters for retry after cooldown]
+```
+
+For maintainer-focused details about the scripts, state model, and safety decisions, see [`docs/`](docs/).
+
 ## Test before enabling
 
 Run a one-time test check:

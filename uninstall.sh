@@ -77,30 +77,50 @@ SERVICE_STILL_RUNNING=0
 
 # ---- Helper functions ------------------------------------------------------
 
+# info MESSAGE...
+#
+# Prints a normal uninstaller progress line to stdout.
 info() {
   printf '[INFO]  %s\n' "$*"
 }
 
+# ok MESSAGE...
+#
+# Prints a successful cleanup step.
 ok() {
   printf '[OK]    %s\n' "$*"
 }
 
+# warn MESSAGE...
+#
+# Prints a non-fatal cleanup issue and increments the warning counter so the
+# final summary reflects that operator review is needed.
 warn() {
   printf '[WARN]  %s\n' "$*"
   WARNINGS=$((WARNINGS + 1))
 }
 
-# error: print an error message and increment the error counter.
-# error_detail: print a follow-up context line without inflating the count.
+# error MESSAGE...
+#
+# Prints a failed cleanup operation and increments the error counter.  The
+# uninstaller continues after errors so it can remove whatever is still safe
+# to remove.
 error() {
   printf '[ERROR] %s\n' "$*" >&2
   ERRORS=$((ERRORS + 1))
 }
 
+# error_detail MESSAGE...
+#
+# Prints follow-up context for the most recent error without inflating the
+# error count.  Use this for manual remediation commands.
 error_detail() {
   printf '[ERROR] %s\n' "$*" >&2
 }
 
+# header TITLE
+#
+# Prints a section heading for operator readability.
 header() {
   printf '\n--- %s\n' "$*"
 }
@@ -177,6 +197,10 @@ remove_dir() {
 
 # ---- Preflight checks ------------------------------------------------------
 
+# preflight_checks
+#
+# Verifies root and pfSense context before removal.  A missing installation
+# is warning-only so the uninstaller can clean up partial installs.
 preflight_checks() {
   header "Preflight checks"
 
@@ -219,6 +243,12 @@ preflight_checks() {
 
 # ---- Stop and disable the service ------------------------------------------
 
+# stop_service
+#
+# Attempts to stop the watchdog and remove only this project's rc.conf.local
+# assignments.  It uses onestop so cleanup works even when the rcvar is not
+# enabled, then validates pidfile state before deciding whether removal can
+# continue safely.
 stop_service() {
   header "Stopping and disabling service"
 
@@ -320,6 +350,11 @@ stop_service() {
 
 # ---- Remove installed files ------------------------------------------------
 
+# remove_files
+#
+# Removes installed project files and runtime state.  The pidfile is left in
+# place if the daemon may still be running so the process does not become
+# untrackable.
 remove_files() {
   header "Removing installed files"
 
@@ -343,6 +378,11 @@ remove_files() {
 
 # ---- Ask about live config -------------------------------------------------
 
+# ask_remove_live_config
+#
+# Gives the operator an explicit choice before deleting the private live
+# config.  In non-interactive contexts it preserves the file because silently
+# deleting credentials is riskier than leaving them for manual cleanup.
 ask_remove_live_config() {
   header "Live configuration file"
 
@@ -398,6 +438,11 @@ ask_remove_live_config() {
 
 # ---- Summary ---------------------------------------------------------------
 
+# print_summary
+#
+# Reports accumulated warnings and errors after all cleanup attempts.  This
+# function does not mutate the counters; the summary must reflect work already
+# attempted.
 print_summary() {
   header "Uninstallation summary"
 
@@ -423,6 +468,11 @@ print_summary() {
 
 # ---- Main ------------------------------------------------------------------
 
+# main
+#
+# Runs the uninstaller phases in an order that stops the daemon before file
+# removal, preserves or deletes live config last, and always prints a final
+# operator summary.
 main() {
   printf '\n'
   printf '%s\n' "============================================================"
