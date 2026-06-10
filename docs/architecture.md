@@ -34,7 +34,7 @@ Restart impact is global to local Tailscale connectivity, even when one peer tri
 
 The rc.d wrapper runs the daemon in the background and writes `/var/run/tailscale_watchdog.pid`. It validates pidfile contents before signaling so corrupt or malicious pidfile data cannot be passed to `kill`.
 
-Notifications are dispatched through a provider selector. Pushover is the current provider, and the restart flow calls only the generic `notify` entry point. Future providers should be added behind that dispatch boundary so restart behavior, cooldown behavior, and service control do not need to change.
+Notifications are dispatched through a provider selector. Pushover is the current provider, and restart/startup notification paths call only the generic `notify` entry point. Future providers should be added behind that dispatch boundary so restart behavior, cooldown behavior, and service control do not need to change.
 
 ## Install And Upgrade Model
 

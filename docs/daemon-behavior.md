@@ -62,7 +62,7 @@ flowchart TD
 
 ## Logging
 
-The daemon logs notable transitions, suppression decisions, restart decisions, restart cooldown selection, service restart results, notification failures, and shutdown.
+The daemon logs notable transitions, suppression decisions, restart decisions, restart cooldown selection, service restart results, notification failures, and shutdown. When enabled and configured, it also sends a startup notification for normal long-running daemon starts.
 
 It does not log every successful direct check. Quiet logs during healthy operation are intentional.
 

@@ -47,8 +47,14 @@ assert_contains "AGENTS references maintainer docs" \
 assert_contains "config example includes notification provider selector" \
   "$config_example_text" 'NOTIFY_PROVIDER="pushover"'
 
+assert_contains "config example includes startup notification setting" \
+  "$config_example_text" 'NOTIFY_ON_STARTUP=1'
+
 assert_contains "README documents notification provider selector" \
   "$readme_text" 'NOTIFY_PROVIDER="pushover"'
+
+assert_contains "README documents startup notification setting" \
+  "$readme_text" 'NOTIFY_ON_STARTUP=0'
 
 assert_contains "maintainer docs describe notification dispatcher" \
   "$script_reference_text" "Notifications use a small provider dispatcher."

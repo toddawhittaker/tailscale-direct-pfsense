@@ -74,6 +74,7 @@ Example configuration:
 ```sh
 # Optional notifications. Pushover is currently the supported provider.
 NOTIFY_PROVIDER="pushover"
+NOTIFY_ON_STARTUP=1
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
 
@@ -112,6 +113,12 @@ CURL_TIMEOUT=10
 At minimum, set `PEERS` to the Tailscale hostnames you want to monitor.
 
 If you want Pushover notifications, set `NOTIFY_PROVIDER="pushover"` plus both `PUSHOVER_TOKEN` and `PUSHOVER_USER`. If either Pushover value is blank, notifications are skipped. To disable notifications explicitly, set `NOTIFY_PROVIDER="none"`.
+
+By default, the watchdog sends a startup notification when it starts in normal service mode. Startup notifications are not sent for test mode or one-shot runs. To disable startup notifications while keeping restart notifications enabled, set:
+
+```sh
+NOTIFY_ON_STARTUP=0
+```
 
 Keep the config file private:
 

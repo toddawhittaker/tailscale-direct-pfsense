@@ -90,3 +90,71 @@ assert_eq "unsupported notify provider does not call curl" \
   "missing" "$([ -f "$CURL_ARG_LOG" ] && cat "$CURL_ARG_LOG" || printf 'missing')"
 assert_contains "unsupported notify provider logs failure" \
   "$(cat "$LOGGER_LOG" 2>/dev/null)" "Notification failed: unsupported provider 'telegram'"
+
+PEERS="router1 router2"
+CHECK_INTERVAL=60
+FAIL_THRESHOLD=5
+PING_COUNT=5
+RESTART_COOLDOWN_MIN=900
+RESTART_COOLDOWN_MAX=1800
+RESTART_SERVICES="tailscaled pfsense_tailscaled"
+RESTART_DEFERRAL_ENABLED=1
+RESTART_DEFERRAL_INTERFACE="tailscale0"
+RESTART_DEFERRAL_CHECK_SECONDS=30
+RESTART_DEFERRAL_MAX_BYTES=65536
+RESTART_DEFERRAL_MAX_ATTEMPTS=10
+DOCS_URL="https://github.com/toddawhittaker/tailscale-direct-pfsense"
+PUSHOVER_TOKEN="secret-token"
+PUSHOVER_USER="secret-user"
+
+startup_message="$(startup_notification_message)"
+assert_contains "startup message includes peers" "$startup_message" "Peers: router1 router2."
+assert_contains "startup message includes interval" "$startup_message" "Check interval: 60s."
+assert_contains "startup message includes threshold" "$startup_message" "Relay threshold: 5 consecutive checks."
+assert_contains "startup message includes ping count" "$startup_message" "Ping count: 5."
+assert_contains "startup message includes cooldown range" "$startup_message" "Restart cooldown: 900-1800s."
+assert_contains "startup message includes restart services" "$startup_message" "Restart services: tailscaled pfsense_tailscaled."
+assert_contains "startup message includes deferral settings" "$startup_message" "Restart deferral: enabled on tailscale0"
+assert_contains "startup message includes docs URL" "$startup_message" "$DOCS_URL"
+assert_not_contains "startup message does not include Pushover token" "$startup_message" "secret-token"
+assert_not_contains "startup message does not include Pushover user" "$startup_message" "secret-user"
+
+rm -f "$CURL_ARG_LOG" "$CURL_CONFIG_COPY" "$LOGGER_LOG"
+NOTIFY_PROVIDER="pushover"
+NOTIFY_ON_STARTUP=1
+TEST=0
+ONE_SHOT=0
+notify_startup_if_enabled
+assert_contains "startup notification calls fake curl" \
+  "$(cat "$CURL_ARG_LOG" 2>/dev/null)" "-K"
+assert_contains "startup notification sends startup message" \
+  "$(cat "$CURL_CONFIG_COPY" 2>/dev/null)" "message=Tailscale watchdog started."
+
+rm -f "$CURL_ARG_LOG" "$CURL_CONFIG_COPY" "$LOGGER_LOG"
+NOTIFY_ON_STARTUP=0
+notify_startup_if_enabled
+assert_eq "disabled startup notification does not call curl" \
+  "missing" "$([ -f "$CURL_ARG_LOG" ] && cat "$CURL_ARG_LOG" || printf 'missing')"
+
+rm -f "$CURL_ARG_LOG" "$CURL_CONFIG_COPY" "$LOGGER_LOG"
+NOTIFY_ON_STARTUP=1
+TEST=1
+ONE_SHOT=0
+notify_startup_if_enabled
+assert_eq "test mode startup notification does not call curl" \
+  "missing" "$([ -f "$CURL_ARG_LOG" ] && cat "$CURL_ARG_LOG" || printf 'missing')"
+
+rm -f "$CURL_ARG_LOG" "$CURL_CONFIG_COPY" "$LOGGER_LOG"
+TEST=0
+ONE_SHOT=1
+notify_startup_if_enabled
+assert_eq "one-shot startup notification does not call curl" \
+  "missing" "$([ -f "$CURL_ARG_LOG" ] && cat "$CURL_ARG_LOG" || printf 'missing')"
+
+rm -f "$CURL_ARG_LOG" "$CURL_CONFIG_COPY" "$LOGGER_LOG"
+TEST=0
+ONE_SHOT=0
+NOTIFY_PROVIDER="none"
+notify_startup_if_enabled
+assert_eq "provider none startup notification does not call curl" \
+  "missing" "$([ -f "$CURL_ARG_LOG" ] && cat "$CURL_ARG_LOG" || printf 'missing')"

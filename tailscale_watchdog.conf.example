@@ -18,6 +18,10 @@
 # can be added later without changing the restart flow.
 NOTIFY_PROVIDER="pushover"
 
+# Send a notification when the daemon starts in normal service mode.
+# Startup notifications are not sent for test mode or one-shot runs.
+NOTIFY_ON_STARTUP=1
+
 PUSHOVER_TOKEN="" # Add your_pushover_application_token here to enable notifications.
 PUSHOVER_USER=""  # Add your_pushover_user_key here to enable notifications.
 

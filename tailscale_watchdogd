@@ -45,6 +45,7 @@ CONFIG_FILE="/usr/local/etc/tailscale_watchdog.conf"
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
 NOTIFY_PROVIDER="pushover"
+NOTIFY_ON_STARTUP=1
 PEERS="router1 router2"
 CHECK_INTERVAL=60
 FAIL_THRESHOLD=5
@@ -328,6 +329,10 @@ validate_config() {
       exit 2
       ;;
   esac
+  if ! is_bool "$NOTIFY_ON_STARTUP"; then
+    echo "NOTIFY_ON_STARTUP must be 0 or 1: $NOTIFY_ON_STARTUP" >&2
+    exit 2
+  fi
   if ! is_bool "$RESTART_DEFERRAL_ENABLED"; then
     echo "RESTART_DEFERRAL_ENABLED must be 0 or 1: $RESTART_DEFERRAL_ENABLED" >&2
     exit 2
@@ -443,6 +448,51 @@ notify_pushover() {
     return 1
   fi
 
+  return 0
+}
+
+# startup_notification_message
+#
+# Prints the human-readable daemon startup notification body.  Keep this
+# secret-free: peer names and service names are allowed, but provider
+# credentials, webhook URLs, and config file paths are not.
+startup_notification_message() {
+  printf 'Tailscale watchdog started. '
+  printf 'Peers: %s. ' "$PEERS"
+  printf 'Check interval: %ss. ' "$CHECK_INTERVAL"
+  printf 'Relay threshold: %s consecutive checks. ' "$FAIL_THRESHOLD"
+  printf 'Ping count: %s. ' "$PING_COUNT"
+  printf 'Restart cooldown: %s-%ss. ' "$RESTART_COOLDOWN_MIN" "$RESTART_COOLDOWN_MAX"
+  printf 'Restart services: %s. ' "$RESTART_SERVICES"
+  if [ "$RESTART_DEFERRAL_ENABLED" -eq 1 ]; then
+    printf 'Restart deferral: enabled on %s (%ss sample, max %s bytes, max %s attempts). ' \
+      "$RESTART_DEFERRAL_INTERFACE" \
+      "$RESTART_DEFERRAL_CHECK_SECONDS" \
+      "$RESTART_DEFERRAL_MAX_BYTES" \
+      "$RESTART_DEFERRAL_MAX_ATTEMPTS"
+  else
+    printf 'Restart deferral: disabled. '
+  fi
+  printf 'Mode: daemon. '
+  printf 'Docs: %s' "$DOCS_URL"
+}
+
+# notify_startup_if_enabled
+#
+# Sends the optional daemon startup notification after final config validation
+# and startup logging.  It is skipped for test and one-shot runs, and any
+# provider failure is logged but never prevents the daemon from starting.
+notify_startup_if_enabled() {
+  if [ "$NOTIFY_ON_STARTUP" -ne 1 ]; then
+    return 0
+  fi
+  if [ "$TEST" -eq 1 ] || [ "$ONE_SHOT" -eq 1 ]; then
+    return 0
+  fi
+
+  if ! notify "$(startup_notification_message)"; then
+    log_msg "Startup notification failed"
+  fi
   return 0
 }
 
@@ -1241,6 +1291,7 @@ main() {
   trap handle_shutdown INT TERM
 
   log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown=(min=${RESTART_COOLDOWN_MIN}s,max=${RESTART_COOLDOWN_MAX}s) restart_deferral_enabled=${RESTART_DEFERRAL_ENABLED} restart_deferral_interface=${RESTART_DEFERRAL_INTERFACE} test=${TEST} docs=${DOCS_URL}"
+  notify_startup_if_enabled
 
   if [ "$ONE_SHOT" -eq 1 ]; then
     check_all_peers

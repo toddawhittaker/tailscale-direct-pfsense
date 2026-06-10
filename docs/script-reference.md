@@ -21,7 +21,7 @@ Important safety choices:
 - unknown ping output breaks the relayed sequence;
 - healthy checks avoid persistent state writes.
 
-Notifications use a small provider dispatcher. `notify` remains the restart-flow entry point, and provider-specific functions such as `notify_pushover` own their own secret handling and curl payload shape. New providers should add validation, docs, and fake-command tests without changing restart flow.
+Notifications use a small provider dispatcher. `notify` remains the restart and startup notification entry point, and provider-specific functions such as `notify_pushover` own their own secret handling and curl payload shape. New providers should add validation, docs, and fake-command tests without changing restart flow.
 
 ## `tailscale_watchdog`
 

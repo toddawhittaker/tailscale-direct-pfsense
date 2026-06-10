@@ -35,6 +35,7 @@ RESTART_DEFERRAL_CHECK_SECONDS=30
 RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
 NOTIFY_PROVIDER="pushover"
+NOTIFY_ON_STARTUP=1
 CURL_TIMEOUT=10
 ${setup}
 validate_config
@@ -84,6 +85,8 @@ run_validate "valid config passes" 0 "" ""
 run_validate "notification provider pushover passes" 0 'NOTIFY_PROVIDER="pushover"' ""
 run_validate "notification provider none passes" 0 'NOTIFY_PROVIDER="none"' ""
 run_validate "blank notification provider passes" 0 'NOTIFY_PROVIDER=""' ""
+run_validate "startup notification enabled passes" 0 'NOTIFY_ON_STARTUP=1' ""
+run_validate "startup notification disabled passes" 0 'NOTIFY_ON_STARTUP=0' ""
 expect_invalid_config "empty peers fail" 'PEERS=""' "PEERS must not be empty"
 
 expect_invalid_peer "peer semicolon fails" 'PEERS="router1 bad;peer"'
@@ -122,6 +125,14 @@ expect_invalid_config "notification provider leading hyphen fails" \
 expect_invalid_config "unsupported notification provider fails" \
   'NOTIFY_PROVIDER="telegram"' \
   "Unsupported notification provider"
+
+expect_invalid_config "startup notification rejects abc" \
+  'NOTIFY_ON_STARTUP=abc' \
+  "NOTIFY_ON_STARTUP must be 0 or 1"
+
+expect_invalid_config "startup notification rejects 2" \
+  'NOTIFY_ON_STARTUP=2' \
+  "NOTIFY_ON_STARTUP must be 0 or 1"
 
 expect_invalid_config "restart deferral interface empty fails" \
   'RESTART_DEFERRAL_INTERFACE=""' \
