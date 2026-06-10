@@ -9,13 +9,15 @@
 #   https://github.com/toddawhittaker/tailscale-direct-pfsense
 #
 # Usage (as root):
+#   VERSION=v1.1.0
 #   curl -fsSL \
-#     https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/uninstall.sh \
+#     "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/uninstall.sh" \
 #     | /bin/sh
 #
 # Or, to review before running (recommended):
+#   VERSION=v1.1.0
 #   curl -fsSL \
-#     https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/uninstall.sh \
+#     "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/uninstall.sh" \
 #     -o /tmp/uninstall.sh
 #   less /tmp/uninstall.sh
 #   /bin/sh /tmp/uninstall.sh

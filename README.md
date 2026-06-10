@@ -6,6 +6,8 @@ The watchdog periodically checks selected Tailscale peers. If a peer remains rea
 
 This is useful on pfSense routers where Tailscale occasionally falls back to DERP/relay even though direct connectivity normally works.
 
+This is an unofficial community project. It is not affiliated with, endorsed by, or supported by Netgate, the pfSense project, or Tailscale Inc.
+
 ## What it does
 
 The watchdog:
@@ -34,20 +36,22 @@ Review-first installation is recommended because the installer runs as root.
 The quickest installation method is:
 
 ```sh
+VERSION=v1.1.0
 curl -fsSL \
-  https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/install.sh \
-  | /bin/sh
+  "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
+  | VERSION="${VERSION}" /bin/sh
 ```
 
 For a review-first installation:
 
 ```sh
+VERSION=v1.1.0
 curl -fsSL \
-  https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/install.sh \
+  "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
   -o /tmp/install.sh
 
 less /tmp/install.sh
-/bin/sh /tmp/install.sh
+VERSION="${VERSION}" /bin/sh /tmp/install.sh
 ```
 
 The installer:
@@ -281,9 +285,10 @@ Then test, enable, and start the service as described above.
 Re-run the installer:
 
 ```sh
+VERSION=v1.1.0
 curl -fsSL \
-  https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/install.sh \
-  | /bin/sh
+  "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
+  | VERSION="${VERSION}" /bin/sh
 ```
 
 The installer updates the daemon, service wrapper, and example config. It preserves your live config at:
@@ -303,16 +308,18 @@ service tailscale_watchdog restart
 To uninstall quickly:
 
 ```sh
+VERSION=v1.1.0
 curl -fsSL \
-  https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/uninstall.sh \
+  "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/uninstall.sh" \
   | /bin/sh
 ```
 
 For a review-first uninstall:
 
 ```sh
+VERSION=v1.1.0
 curl -fsSL \
-  https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/main/uninstall.sh \
+  "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/uninstall.sh" \
   -o /tmp/uninstall.sh
 
 less /tmp/uninstall.sh
