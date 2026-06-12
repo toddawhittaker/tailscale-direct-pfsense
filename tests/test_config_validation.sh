@@ -36,6 +36,7 @@ RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
 NOTIFY_PROVIDER="pushover"
 NOTIFY_ON_STARTUP=1
+LOCAL_TAILSCALE_NAME=""
 CURL_TIMEOUT=10
 ${setup}
 validate_config
@@ -87,6 +88,8 @@ run_validate "notification provider none passes" 0 'NOTIFY_PROVIDER="none"' ""
 run_validate "blank notification provider passes" 0 'NOTIFY_PROVIDER=""' ""
 run_validate "startup notification enabled passes" 0 'NOTIFY_ON_STARTUP=1' ""
 run_validate "startup notification disabled passes" 0 'NOTIFY_ON_STARTUP=0' ""
+run_validate "local tailscale name blank passes" 0 'LOCAL_TAILSCALE_NAME=""' ""
+run_validate "local tailscale name safe value passes" 0 'LOCAL_TAILSCALE_NAME="router-1"' ""
 expect_invalid_config "empty peers fail" 'PEERS=""' "PEERS must not be empty"
 
 expect_invalid_peer "peer semicolon fails" 'PEERS="router1 bad;peer"'
@@ -133,6 +136,22 @@ expect_invalid_config "startup notification rejects abc" \
 expect_invalid_config "startup notification rejects 2" \
   'NOTIFY_ON_STARTUP=2' \
   "NOTIFY_ON_STARTUP must be 0 or 1"
+
+expect_invalid_config "local tailscale name semicolon fails" \
+  'LOCAL_TAILSCALE_NAME="router1;reboot"' \
+  "Invalid local Tailscale name"
+
+expect_invalid_config "local tailscale name path traversal fails" \
+  'LOCAL_TAILSCALE_NAME="../router1"' \
+  "Invalid local Tailscale name"
+
+expect_invalid_config "local tailscale name leading hyphen fails" \
+  'LOCAL_TAILSCALE_NAME="-router1"' \
+  "Invalid local Tailscale name"
+
+expect_invalid_config "local tailscale name glob fails" \
+  'LOCAL_TAILSCALE_NAME="*"' \
+  "Invalid local Tailscale name"
 
 expect_invalid_config "restart deferral interface empty fails" \
   'RESTART_DEFERRAL_INTERFACE=""' \

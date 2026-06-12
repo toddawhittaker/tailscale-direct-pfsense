@@ -46,6 +46,7 @@ PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
 NOTIFY_PROVIDER="pushover"
 NOTIFY_ON_STARTUP=1
+LOCAL_TAILSCALE_NAME=""
 PEERS="router1 router2"
 CHECK_INTERVAL=60
 FAIL_THRESHOLD=5
@@ -91,6 +92,7 @@ LAST_RESTART_NEXT_ALLOWED=""
 LAST_RESTART_DEFERRAL_RESULT=""
 LAST_RESTART_DEFERRAL_DELTA=""
 LAST_RESTART_DEFERRAL_ATTEMPTS=""
+RESOLVED_LOCAL_TAILSCALE_NAME=""
 
 # Holds the PID of the background sleep process during the main loop so that
 # handle_shutdown can kill it promptly on SIGTERM/SIGINT.
@@ -139,6 +141,19 @@ is_bool() {
       ;;
   esac
   return 1
+}
+
+# is_hostname_safe VALUE
+#
+# Returns 0 for names that are safe to put in logs, notifications, and simple
+# shell command arguments after validation.
+is_hostname_safe() {
+  case "$1" in
+    ''|-*|*[!A-Za-z0-9._-]*)
+      return 1
+      ;;
+  esac
+  return 0
 }
 
 # log_msg MESSAGE...
@@ -333,6 +348,10 @@ validate_config() {
     echo "NOTIFY_ON_STARTUP must be 0 or 1: $NOTIFY_ON_STARTUP" >&2
     exit 2
   fi
+  if [ -n "$LOCAL_TAILSCALE_NAME" ] && ! is_hostname_safe "$LOCAL_TAILSCALE_NAME"; then
+    echo "Invalid local Tailscale name (contains shell-unsafe characters): ${LOCAL_TAILSCALE_NAME}" >&2
+    exit 2
+  fi
   if ! is_bool "$RESTART_DEFERRAL_ENABLED"; then
     echo "RESTART_DEFERRAL_ENABLED must be 0 or 1: $RESTART_DEFERRAL_ENABLED" >&2
     exit 2
@@ -394,13 +413,50 @@ curl_config_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-# notify MESSAGE
+# write_pushover_curl_config
+#
+# Writes the secret-bearing curl config used for Pushover requests.
+write_pushover_curl_config() {
+  printf 'fail\n'
+  printf 'show-error\n'
+  printf 'silent\n'
+  printf 'max-time = "%s"\n' "$(curl_config_escape "$CURL_TIMEOUT")"
+  printf 'url = "https://api.pushover.net/1/messages.json"\n'
+  printf 'form-string = "token=%s"\n' "$(curl_config_escape "$PUSHOVER_TOKEN")"
+  printf 'form-string = "user=%s"\n' "$(curl_config_escape "$PUSHOVER_USER")"
+}
+
+# notifications_may_send
+#
+# Returns 0 when the configured provider has enough local configuration to
+# attempt delivery.  This avoids doing notification-only work, such as local
+# name detection, when notifications are disabled or credentials are blank.
+notifications_may_send() {
+  case "$NOTIFY_PROVIDER" in
+    ''|none)
+      return 1
+      ;;
+    pushover)
+      [ -n "$PUSHOVER_TOKEN" ] && [ -n "$PUSHOVER_USER" ]
+      return $?
+      ;;
+  esac
+  return 0
+}
+
+# notify [TITLE] MESSAGE
 #
 # Dispatches an optional notification through the configured provider.  A blank
 # provider or "none" is a clean no-op.  Provider failures are logged but do not
 # alter restart state.
 notify() {
-  message="$1"
+  title="${1:-}"
+  message="${2:-}"
+
+  if [ -z "$message" ]; then
+    message="$title"
+    title=""
+  fi
 
   case "$NOTIFY_PROVIDER" in
     ''|none)
@@ -408,7 +464,7 @@ notify() {
       return 0
       ;;
     pushover)
-      notify_pushover "$message"
+      notify_pushover "$title" "$message"
       return $?
       ;;
     *)
@@ -418,12 +474,13 @@ notify() {
   esac
 }
 
-# notify_pushover MESSAGE
+# notify_pushover TITLE MESSAGE
 #
 # Sends a Pushover notification using curl's config stream.  Missing Pushover
 # credentials are treated as disabled notifications for backward compatibility.
 notify_pushover() {
-  message="$1"
+  title="$1"
+  message="$2"
 
   if [ -z "$PUSHOVER_TOKEN" ] || [ -z "$PUSHOVER_USER" ]; then
     log_msg "Pushover notification skipped: token or user key is empty"
@@ -434,21 +491,77 @@ notify_pushover() {
     return 1
   fi
 
-  if ! {
-    printf 'fail\n'
-    printf 'show-error\n'
-    printf 'silent\n'
-    printf 'max-time = "%s"\n' "$(curl_config_escape "$CURL_TIMEOUT")"
-    printf 'url = "https://api.pushover.net/1/messages.json"\n'
-    printf 'form-string = "token=%s"\n' "$(curl_config_escape "$PUSHOVER_TOKEN")"
-    printf 'form-string = "user=%s"\n' "$(curl_config_escape "$PUSHOVER_USER")"
-    printf 'form-string = "message=%s"\n' "$(curl_config_escape "$message")"
-  } | curl -K - >/dev/null 2>&1; then
+  if [ -n "$title" ]; then
+    if ! write_pushover_curl_config | curl -K - \
+      --data-urlencode "title=${title}" \
+      --data-urlencode "message=${message}" \
+      >/dev/null 2>&1; then
+      log_msg "Pushover notification failed"
+      return 1
+    fi
+  elif ! write_pushover_curl_config | curl -K - \
+    --data-urlencode "message=${message}" \
+    >/dev/null 2>&1; then
     log_msg "Pushover notification failed"
     return 1
   fi
 
   return 0
+}
+
+# detect_local_tailscale_name
+#
+# Prints the local Tailscale hostname as shown by tailscale status.  This is a
+# best-effort notification label only; failure must not affect daemon behavior.
+detect_local_tailscale_name() {
+  if ! command -v tailscale >/dev/null 2>&1; then
+    log_msg "Local Tailscale name detection failed: tailscale not found"
+    printf 'unknown\n'
+    return 1
+  fi
+
+  output="$(tailscale status --self --peers=false 2>/dev/null)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log_msg "Local Tailscale name detection failed: tailscale status rc=${rc}"
+    printf 'unknown\n'
+    return 1
+  fi
+
+  name="$(printf '%s\n' "$output" | awk 'NF && $1 !~ /^#/ { print $2; exit }')"
+  if ! is_hostname_safe "$name"; then
+    log_msg "Local Tailscale name detection failed: unexpected status output"
+    printf 'unknown\n'
+    return 1
+  fi
+
+  printf '%s\n' "$name"
+  return 0
+}
+
+# local_tailscale_name
+#
+# Prints the configured or detected local Tailscale name.  The value is cached
+# after first resolution so repeated notifications do not run tailscale status.
+local_tailscale_name() {
+  if [ -n "$RESOLVED_LOCAL_TAILSCALE_NAME" ]; then
+    printf '%s\n' "$RESOLVED_LOCAL_TAILSCALE_NAME"
+    return 0
+  fi
+
+  if [ -n "$LOCAL_TAILSCALE_NAME" ]; then
+    RESOLVED_LOCAL_TAILSCALE_NAME="$LOCAL_TAILSCALE_NAME"
+    printf '%s\n' "$RESOLVED_LOCAL_TAILSCALE_NAME"
+    return 0
+  fi
+
+  RESOLVED_LOCAL_TAILSCALE_NAME="$(detect_local_tailscale_name)"
+  printf '%s\n' "$RESOLVED_LOCAL_TAILSCALE_NAME"
+}
+
+# startup_notification_title ROUTER_NAME
+startup_notification_title() {
+  printf 'Tailscale watchdog: %s started' "$1"
 }
 
 # startup_notification_message
@@ -457,24 +570,62 @@ notify_pushover() {
 # secret-free: peer names and service names are allowed, but provider
 # credentials, webhook URLs, and config file paths are not.
 startup_notification_message() {
-  printf 'Tailscale watchdog started. '
-  printf 'Peers: %s. ' "$PEERS"
-  printf 'Check interval: %ss. ' "$CHECK_INTERVAL"
-  printf 'Relay threshold: %s consecutive checks. ' "$FAIL_THRESHOLD"
-  printf 'Ping count: %s. ' "$PING_COUNT"
-  printf 'Restart cooldown: %s-%ss. ' "$RESTART_COOLDOWN_MIN" "$RESTART_COOLDOWN_MAX"
-  printf 'Restart services: %s. ' "$RESTART_SERVICES"
+  router_name="$1"
+
+  printf 'Router: %s\n' "$router_name"
+  printf 'Event: started\n'
+  printf 'Peers: %s\n' "$PEERS"
+  printf 'Check interval: %ss\n' "$CHECK_INTERVAL"
+  printf 'Relay threshold: %s consecutive checks\n' "$FAIL_THRESHOLD"
+  printf 'Ping count: %s\n' "$PING_COUNT"
+  printf 'Restart cooldown: %s-%ss\n' "$RESTART_COOLDOWN_MIN" "$RESTART_COOLDOWN_MAX"
+  printf 'Restart services: %s\n' "$RESTART_SERVICES"
   if [ "$RESTART_DEFERRAL_ENABLED" -eq 1 ]; then
-    printf 'Restart deferral: enabled on %s (%ss sample, max %s bytes, max %s attempts). ' \
+    printf 'Restart deferral: enabled on %s (%ss sample, max %s bytes, max %s attempts)\n' \
       "$RESTART_DEFERRAL_INTERFACE" \
       "$RESTART_DEFERRAL_CHECK_SECONDS" \
       "$RESTART_DEFERRAL_MAX_BYTES" \
       "$RESTART_DEFERRAL_MAX_ATTEMPTS"
   else
-    printf 'Restart deferral: disabled. '
+    printf 'Restart deferral: disabled\n'
   fi
-  printf 'Mode: daemon. '
   printf 'Docs: %s' "$DOCS_URL"
+}
+
+# restart_notification_title ROUTER_NAME RESULT
+restart_notification_title() {
+  router_name="$1"
+  result="$2"
+
+  case "$result" in
+    success)
+      printf 'Tailscale watchdog: %s restarted' "$router_name"
+      ;;
+    failure)
+      printf 'Tailscale watchdog: %s restart failed' "$router_name"
+      ;;
+  esac
+}
+
+# restart_notification_message ROUTER_NAME RESULT PEER COUNT
+restart_notification_message() {
+  router_name="$1"
+  result="$2"
+  reason_peer="$3"
+  reason_count="$4"
+
+  printf 'Router: %s\n' "$router_name"
+  case "$result" in
+    success)
+      printf 'Event: restart completed\n'
+      ;;
+    failure)
+      printf 'Event: restart failed\n'
+      ;;
+  esac
+  printf 'Trigger peer: %s\n' "$reason_peer"
+  printf 'Relay count: %s consecutive checks\n' "$reason_count"
+  printf 'Services: %s' "$RESTART_SERVICES"
 }
 
 # notify_startup_if_enabled
@@ -489,8 +640,13 @@ notify_startup_if_enabled() {
   if [ "$TEST" -eq 1 ] || [ "$ONE_SHOT" -eq 1 ]; then
     return 0
   fi
+  if ! notifications_may_send; then
+    notify "Startup notification skipped"
+    return 0
+  fi
 
-  if ! notify "$(startup_notification_message)"; then
+  router_name="$(local_tailscale_name)"
+  if ! notify "$(startup_notification_title "$router_name")" "$(startup_notification_message "$router_name")"; then
     log_msg "Startup notification failed"
   fi
   return 0
@@ -1019,14 +1175,28 @@ restart_tailscale_services() {
   if [ "$failures" -eq 0 ]; then
     msg="Tailscale watchdog: restarted ${RESTART_SERVICES} after peer ${reason_peer} was relayed for ${reason_count} consecutive checks."
     log_msg "$msg"
-    notify "$msg"
+    if notifications_may_send; then
+      router_name="$(local_tailscale_name)"
+      notify \
+        "$(restart_notification_title "$router_name" success)" \
+        "$(restart_notification_message "$router_name" success "$reason_peer" "$reason_count")"
+    else
+      notify "$msg"
+    fi
     reset_all_peer_state_after_restart
     return 0
   fi
 
   msg="Tailscale watchdog: restart FAILED after peer ${reason_peer} was relayed for ${reason_count} consecutive checks."
   log_msg "$msg"
-  notify "$msg"
+  if notifications_may_send; then
+    router_name="$(local_tailscale_name)"
+    notify \
+      "$(restart_notification_title "$router_name" failure)" \
+      "$(restart_notification_message "$router_name" failure "$reason_peer" "$reason_count")"
+  else
+    notify "$msg"
+  fi
   return 1
 }
 

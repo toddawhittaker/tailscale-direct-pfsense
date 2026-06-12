@@ -21,7 +21,7 @@ Important safety choices:
 - unknown ping output breaks the relayed sequence;
 - healthy checks avoid persistent state writes.
 
-Notifications use a small provider dispatcher. `notify` remains the restart and startup notification entry point, and provider-specific functions such as `notify_pushover` own their own secret handling and curl payload shape. New providers should add validation, docs, and fake-command tests without changing restart flow.
+Notifications use a small provider dispatcher. `notify` remains the restart and startup notification entry point, and provider-specific functions such as `notify_pushover` own their own secret handling and curl payload shape. Pushover notifications use a title plus a line-oriented body; token and user secrets stay in curl config on stdin, while the non-secret title and message are sent through curl URL-encoding arguments so embedded line breaks survive delivery. New providers should add validation, docs, and fake-command tests without changing restart flow.
 
 ## `tailscale_watchdog`
 

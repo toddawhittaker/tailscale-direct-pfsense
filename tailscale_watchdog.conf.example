@@ -22,6 +22,10 @@ NOTIFY_PROVIDER="pushover"
 # Startup notifications are not sent for test mode or one-shot runs.
 NOTIFY_ON_STARTUP=1
 
+# Display name used in notifications for this router.
+# Leave blank to auto-detect the local Tailscale name.
+LOCAL_TAILSCALE_NAME=""
+
 PUSHOVER_TOKEN="" # Add your_pushover_application_token here to enable notifications.
 PUSHOVER_USER=""  # Add your_pushover_user_key here to enable notifications.
 

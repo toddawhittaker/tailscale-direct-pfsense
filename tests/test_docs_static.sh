@@ -50,14 +50,23 @@ assert_contains "config example includes notification provider selector" \
 assert_contains "config example includes startup notification setting" \
   "$config_example_text" 'NOTIFY_ON_STARTUP=1'
 
+assert_contains "config example includes local tailscale name setting" \
+  "$config_example_text" 'LOCAL_TAILSCALE_NAME=""'
+
 assert_contains "README documents notification provider selector" \
   "$readme_text" 'NOTIFY_PROVIDER="pushover"'
 
 assert_contains "README documents startup notification setting" \
   "$readme_text" 'NOTIFY_ON_STARTUP=0'
 
+assert_contains "README documents local tailscale name override" \
+  "$readme_text" 'LOCAL_TAILSCALE_NAME="router1"'
+
 assert_contains "maintainer docs describe notification dispatcher" \
   "$script_reference_text" "Notifications use a small provider dispatcher."
+
+assert_contains "maintainer docs describe line-oriented notifications" \
+  "$script_reference_text" "Pushover notifications use a title plus a line-oriented body"
 
 assert_contains "AGENTS mentions new notification provider requirements" \
   "$agents_text" "New notification providers must preserve Pushover compatibility"

@@ -79,6 +79,7 @@ Example configuration:
 # Optional notifications. Pushover is currently the supported provider.
 NOTIFY_PROVIDER="pushover"
 NOTIFY_ON_STARTUP=1
+LOCAL_TAILSCALE_NAME=""
 PUSHOVER_TOKEN=""
 PUSHOVER_USER=""
 
@@ -122,6 +123,14 @@ By default, the watchdog sends a startup notification when it starts in normal s
 
 ```sh
 NOTIFY_ON_STARTUP=0
+```
+
+Pushover notifications use a title plus a line-oriented message body. The title includes the local router's Tailscale name, and the body includes the router name, event, trigger peer, relay count, and restarted services where applicable.
+
+By default, the router name is detected from local Tailscale status. To force the display name used in notifications, set:
+
+```sh
+LOCAL_TAILSCALE_NAME="router0"
 ```
 
 Keep the config file private:
