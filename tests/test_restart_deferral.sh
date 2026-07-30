@@ -100,6 +100,19 @@ case "$NETSTAT_MODE" in
     printf 'lo0 16384 link address 1 0 0 1000 1 0 1000 0\n'
     exit 0
     ;;
+  second_fails)
+    # The first sample succeeds and only the second one fails.  The malformed
+    # and missing modes above fail on every call, so should_defer_restart
+    # always returns at the first sample and the second sample's failure
+    # branch is never reached.  This mode is the only way to exercise it.
+    if [ "$count" -ge 2 ]; then
+      printf 'Name Mtu Network Address Ipkts Ierrs Idrop Ibytes Opkts Oerrs Obytes Coll\n'
+      printf 'lo0 16384 link address 1 0 0 1000 1 0 1000 0\n'
+      exit 0
+    fi
+    ibytes=1000
+    obytes=1000
+    ;;
 esac
 
 printf 'Name Mtu Network Address Ipkts Ierrs Idrop Ibytes Opkts Oerrs Obytes Coll\n'
@@ -228,6 +241,24 @@ export LOGGER_LOG
 handle_relayed router1
 assert_contains "missing interface proceeds with restart" \
   "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
+
+reset_restart_state
+reset_fake_netstat second_fails
+SERVICE_LOG="${tmpdir}/service-second-fails.log"
+LOGGER_LOG="${tmpdir}/logger-second-fails.log"
+export SERVICE_LOG
+export LOGGER_LOG
+handle_relayed router1
+assert_contains "failure on the second activity sample proceeds with restart" \
+  "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
+assert_file_exists "failure on the second activity sample writes cooldown state" \
+  "$NEXT_RESTART_FILE"
+assert_contains "failure on the second activity sample logs the check failure" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "Restart deferral activity check failed for interface tailscale0"
+# Proves the first sample really did succeed, so this exercised the second
+# sample's failure branch rather than repeating the first sample's.
+assert_eq "second sample failure sampled the interface twice" \
+  "2" "$(cat "$NETSTAT_COUNT_FILE" 2>/dev/null)"
 
 reset_restart_state
 reset_fake_netstat active
