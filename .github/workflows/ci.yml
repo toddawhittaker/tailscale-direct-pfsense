@@ -72,14 +72,19 @@ jobs:
       # GitHub provides no native FreeBSD runner; this is the established way
       # to test BSD behavior on Actions.
       #
-      # TODO: pin `release:` to the FreeBSD base of the supported pfSense
-      # version once that is decided and written down.  Without it the VM boots
-      # whatever the pinned action SHA defaults to -- deterministic today, but
-      # implicit, and stat/jot/netstat behavior is exactly what can drift
-      # between FreeBSD 12 (pfSense CE 2.6) and 14 (CE 2.7).
+      # release is pinned to 14.0 to match the FreeBSD base of pfSense CE 2.7,
+      # the supported target (see README "Requirements" and
+      # docs/architecture.md).  Fidelity to the target matters more here than
+      # currency: the whole reason this job exists is that stat -f, jot, and
+      # netstat -ibn behavior is what can drift between FreeBSD releases, so
+      # testing against a newer 14.x than the router actually runs would
+      # weaken the signal.  Bump this when the supported pfSense base moves.
+      #
+      # usesh runs the block under /bin/sh rather than the VM's default shell.
       - name: Run suite in a FreeBSD VM
         uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1
         with:
+          release: "14.0"
           usesh: true
           run: |
             set -e
