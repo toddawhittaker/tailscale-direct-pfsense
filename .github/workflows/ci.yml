@@ -92,11 +92,20 @@ jobs:
             make test
 
   shellcheck:
-    name: shellcheck (advisory)
+    name: shellcheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Advisory on purpose.  AGENTS.md is explicit that shellcheck is not
-    # authoritative for pfSense/FreeBSD.
+    # This job was advisory until its baseline reached zero.  It is now a
+    # blocking check, which is only defensible because two things are true
+    # together: the exclusion list below is curated rather than blanket, and
+    # the shellcheck version is pinned, so the baseline cannot move without an
+    # explicit change to this file.
+    #
+    # AGENTS.md remains right that shellcheck is not authoritative for
+    # pfSense/FreeBSD.  Blocking on it does not change that.  A new finding
+    # here means "look at this", not "shellcheck is correct" -- and the right
+    # resolution is sometimes an inline `# shellcheck disable=` with a comment
+    # explaining why the code is right, as at tailscale_watchdog:170.
     #
     # The exclusions below are not cosmetic -- each one suppresses a check that
     # is actively wrong for this codebase:
@@ -133,10 +142,6 @@ jobs:
     # must not have and flags every setting as unused.  tests/smoke.sh already
     # syntax-checks it with `sh -n`, which is the right tool for a config file.
     #
-    # Drop continue-on-error once the remaining baseline is clean or fully
-    # curated, so the job becomes required.  An advisory check nobody reads is
-    # worth nothing.
-    continue-on-error: true
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -155,6 +160,16 @@ jobs:
       # and runs it.  Unlike install.sh, where a checksum committed beside the
       # payload would add nothing, here it pins an artifact published by
       # someone else, so it is a real integrity check.
+      #
+      # MAINTENANCE: this pin does not update itself.  Dependabot's
+      # github-actions ecosystem tracks `uses:` action SHAs, not a version
+      # string inside a `run:` block, so it will never propose a shellcheck
+      # bump.  To move versions, change both SHELLCHECK_VERSION and
+      # SHELLCHECK_SHA256 together -- the checksum is for the .tar.xz asset of
+      # the matching release -- and expect the baseline to shift, since
+      # findings appear and disappear across shellcheck releases.  SC2015 in
+      # uninstall.sh is the worked example: it fired on 0.9.0 and does not on
+      # 0.11.0.
       - name: Install shellcheck (pinned)
         env:
           SHELLCHECK_VERSION: v0.11.0
