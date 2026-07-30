@@ -56,6 +56,14 @@ Current tests cover:
 - per-peer state transitions;
 - installer, uninstaller, rc wrapper, and docs static safety checks.
 
+## Documentation Coupling
+
+`test_docs_static.sh` deliberately couples documentation to code. It greps `README.md`, `AGENTS.md`, `docs/script-reference.md`, `tailscale_watchdog.conf.example`, and the shell scripts for required strings, and asserts that unsafe patterns are absent.
+
+The practical consequence: adding, renaming, or re-defaulting a config knob is not complete until the daemon defaults, the config example, the README, the relevant `docs/` page, and the assertion in `test_docs_static.sh` all agree. The same applies to release version strings and the documentation URL in each script header.
+
+When this test fails, fix the drift rather than relaxing the assertion. Weakening an assertion to make the suite pass removes the only check that keeps these files in sync.
+
 ## What Tests Must Not Do
 
 Do not run these from tests unless explicitly authorized for a live-system exercise:
