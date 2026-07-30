@@ -6,6 +6,8 @@
 
 Primary repo files: `tailscale_watchdogd`, `tailscale_watchdog` rc.d wrapper, `tailscale_watchdog.conf.example`, `install.sh`, `uninstall.sh`, `README.md`, `docs/`, `LICENSE`.
 
+This file is the single rulebook for every coding agent working here. `CLAUDE.md` is a symlink to it, so Claude Code and Codex read the same content; keep it a symlink rather than materializing a second file that can drift. Claude Code subagent definitions live in `.claude/agents/` and are the one Claude-specific exception.
+
 * `/usr/local/sbin/tailscale_watchdogd`
 * `/usr/local/etc/rc.d/tailscale_watchdog`
 * `/usr/local/etc/tailscale_watchdog.conf`
@@ -25,6 +27,7 @@ Primary repo files: `tailscale_watchdogd`, `tailscale_watchdog` rc.d wrapper, `t
 Prefer:
 
 * Quoted variables, explicit error handling, small functions, `case` validation.
+* Global variables only. Do not introduce `local`; there is none in the project today. Tests source `tailscale_watchdogd` and override globals such as `STATE_DIR`, `NEXT_RESTART_FILE`, and `FAIL_THRESHOLD` directly, so function-scoped variables would make new code untestable.
 * `mktemp` for temp files.
 * Atomic installs/updates via temp file in destination directory plus `mv`.
 * `logger` for daemon/service logs.
@@ -88,6 +91,14 @@ Preferred commands:
 make smoke
 make test
 ```
+
+Run a single test script directly while iterating:
+
+```sh
+sh tests/test_cooldown.sh
+```
+
+Register every new test file in `TESTS` in the `Makefile`. That list is explicit, not globbed, so an unregistered test file silently never runs.
 
 Tests must not run real live operations unless explicitly authorized:
 

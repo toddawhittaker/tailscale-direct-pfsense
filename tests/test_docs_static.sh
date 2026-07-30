@@ -23,6 +23,14 @@ assert_file_exists "daemon behavior docs exist" "${REPO_ROOT}/docs/daemon-behavi
 assert_file_exists "script reference docs exist" "${REPO_ROOT}/docs/script-reference.md"
 assert_file_exists "testing docs exist" "${REPO_ROOT}/docs/testing.md"
 
+# CLAUDE.md must remain a symlink to AGENTS.md so Claude Code and Codex read
+# one rulebook.  A tool that materializes it as a separate regular file would
+# create a second copy that silently drifts from AGENTS.md.
+assert_success "CLAUDE.md is a symlink" test -L "${REPO_ROOT}/CLAUDE.md"
+
+assert_eq "CLAUDE.md resolves to AGENTS.md" \
+  "AGENTS.md" "$(readlink "${REPO_ROOT}/CLAUDE.md" 2>/dev/null)"
+
 assert_not_contains "README does not recommend printing Pushover secrets" \
   "$readme_text" "grep '^PUSHOVER_'"
 
