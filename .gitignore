@@ -1,0 +1,28 @@
+# Live config.  May contain notification credentials (Pushover token and user
+# key), so it must never be committed.  Only the .example file belongs in the
+# repository.
+#
+# The second pattern covers the realistic accident: a live config saved under a
+# variant name such as tailscale_watchdog.conf.bak or .conf.local while editing
+# on the router.  The negation keeps the example file tracked.
+tailscale_watchdog.conf
+tailscale_watchdog.conf.*
+!tailscale_watchdog.conf.example
+
+# Merge and patch leftovers.  These can contain a full copy of whatever they
+# were derived from, including a live config.
+*.orig
+*.rej
+
+# Environment files that may carry provider credentials
+.env
+.env.*
+
+# Assistant and tooling logs
+.codex-log
+*.log
+
+# Editor and OS noise
+*.swp
+*~
+.DS_Store
