@@ -48,8 +48,25 @@ cat "$FAKE_TAILSCALE_OUTPUT"
 exit "${FAKE_TAILSCALE_RC:-0}"
 EOF
 
+# Guards, not behavior.  Restart deferral is disabled below, so neither of
+# these should ever run; they exist so that a regression which re-enables
+# deferral is caught by an assertion instead of silently reaching the host's
+# real interface counters and sleeping for 30 seconds at a time.
+cat > "${fakebin}/netstat" <<'EOF'
+#!/bin/sh
+printf 'netstat %s\n' "$*" >> "$HOST_TOOL_LOG"
+exit 1
+EOF
+
+cat > "${fakebin}/sleep" <<'EOF'
+#!/bin/sh
+printf 'sleep %s\n' "$*" >> "$HOST_TOOL_LOG"
+exit 0
+EOF
+
 chmod 755 "${fakebin}/logger" "${fakebin}/date" "${fakebin}/service" \
-  "${fakebin}/curl" "${fakebin}/tailscale"
+  "${fakebin}/curl" "${fakebin}/tailscale" "${fakebin}/netstat" \
+  "${fakebin}/sleep"
 
 PATH="${fakebin}:/usr/bin:/bin"
 export PATH
@@ -65,7 +82,17 @@ NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 SERVICE_LOG="${tmpdir}/service.log"
 CURL_LOG="${tmpdir}/curl.log"
 LOGGER_LOG="${tmpdir}/logger.log"
-export SERVICE_LOG CURL_LOG LOGGER_LOG
+HOST_TOOL_LOG="${tmpdir}/host-tools.log"
+export SERVICE_LOG CURL_LOG LOGGER_LOG HOST_TOOL_LOG
+
+# This file covers peer state transitions and global cooldown, not restart
+# deferral; test_restart_deferral.sh owns that.  At the daemon default of 1,
+# crossing the threshold below would send should_defer_restart to
+# get_interface_bytes -> netstat -ibn -I tailscale0 and then sleep for
+# RESTART_DEFERRAL_CHECK_SECONDS, making this file's result depend on the
+# host's live interface counters.  On a machine where tailscale0 carries
+# traffic the restart assertions would flip.
+RESTART_DEFERRAL_ENABLED=0
 TEST=1
 DEBUG=0
 PUSHOVER_TOKEN=""
@@ -153,3 +180,8 @@ FAKE_TAILSCALE_RC=1
 export FAKE_TAILSCALE_OUTPUT FAKE_TAILSCALE_RC
 assert_eq "check_peer_path returns unknown for unparseable output" \
   "unknown" "$(check_peer_path router1)"
+
+# Proves the guarantee rather than assuming it: nothing in this file reached
+# the host's interface counters or slept.
+assert_eq "no netstat or sleep was invoked" \
+  "missing" "$([ -f "$HOST_TOOL_LOG" ] && cat "$HOST_TOOL_LOG" || printf 'missing')"

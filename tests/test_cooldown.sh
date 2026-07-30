@@ -67,8 +67,22 @@ assert_eq "fixed cooldown range returns fixed value" \
 
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=1800
+
+# Force the jot-missing branch instead of relying on the host not having jot.
+# jot(1) is FreeBSD base userland -- the very reason random_cooldown_seconds
+# guards for it -- so on the target platform the real jot runs and returns a
+# random value in [900,1800], making this assertion pass roughly one run in
+# 901.  fakebin holds only logger and date, so restricting PATH to it makes
+# `command -v jot` fail identically on every platform.
+saved_path="$PATH"
+PATH="$fakebin"
+export PATH
+
 assert_eq "missing jot falls back to minimum cooldown" \
   "900" "$(random_cooldown_seconds)"
+
+PATH="$saved_path"
+export PATH
 
 cat > "${fakebin}/jot" <<'EOF'
 #!/bin/sh
