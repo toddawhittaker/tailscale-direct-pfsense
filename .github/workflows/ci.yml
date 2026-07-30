@@ -109,6 +109,24 @@ jobs:
     #           are all read by rc.subr's run_rc_command at runtime.
     #   SC1091  cannot follow `. /etc/rc.subr`, which does not exist at lint
     #           time on a Linux runner.
+    #   SC1090  cannot follow a sourced path held in a variable.  Every test
+    #           does `. "${REPO_ROOT}/tailscale_watchdogd"`, which is the whole
+    #           mechanism the suite is built on.
+    #   SC2016  "expressions don't expand in single quotes".  This was the
+    #           single largest group in the baseline, and non-expansion is the
+    #           entire point everywhere it fires: fake commands are written as
+    #           <<'EOF' heredocs precisely so that $1 and $* reach the fake
+    #           script rather than being expanded by the test writing it, and
+    #           test_docs_static.sh asserts on literal strings such as
+    #           'docs=${DOCS_URL}' that must not expand.
+    #   SC2223  flags `: ${var:="default"}` as a globbing hazard.  That is the
+    #           standard rc.d idiom for defaulting rc.conf variables and is
+    #           used as intended in the wrapper.
+    #
+    # Deliberately NOT excluded, so they stay visible as real signal: SC2015
+    # (A && B || C), SC2181 (checking $? instead of the command directly), and
+    # SC2086 (unquoted expansion -- which is correct for rc.d flags but worth
+    # seeing anywhere else).
     #
     # tailscale_watchdog.conf.example is deliberately absent from the file
     # list: it is sourced, never executed, so shellcheck demands a shebang it
@@ -132,7 +150,7 @@ jobs:
 
       - name: Lint as POSIX sh
         run: |
-          shellcheck --shell=sh -e SC1007,SC2034,SC1091 \
+          shellcheck --shell=sh -e SC1007,SC1090,SC1091,SC2016,SC2034,SC2223 \
             tailscale_watchdogd \
             tailscale_watchdog \
             install.sh \
