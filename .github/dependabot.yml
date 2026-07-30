@@ -1,0 +1,21 @@
+# Dependabot configuration.
+#
+# This project is shell-only and has no package manifest, so there are no
+# runtime dependencies for Dependabot to track.  Runtime requirements are
+# base FreeBSD userland plus Tailscale and curl, none of which it models.
+#
+# The one thing worth tracking is the third-party GitHub Actions used by CI.
+# Those are pinned to commit SHAs in .github/workflows/, which is good for
+# supply-chain safety but means they never pick up fixes on their own.
+# Dependabot proposes SHA bumps as reviewable pull requests, which keeps the
+# pinning honest instead of frozen.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "ci"
