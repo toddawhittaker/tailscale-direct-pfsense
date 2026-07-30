@@ -965,8 +965,7 @@ should_defer_restart() {
     return 1
   fi
 
-  first="$(get_interface_bytes "$RESTART_DEFERRAL_INTERFACE")"
-  if [ "$?" -ne 0 ]; then
+  if ! first="$(get_interface_bytes "$RESTART_DEFERRAL_INTERFACE")"; then
     LAST_RESTART_DEFERRAL_RESULT="check_failed"
     log_msg "Restart deferral activity check failed for interface ${RESTART_DEFERRAL_INTERFACE}; proceeding without deferral"
     return 1
@@ -978,8 +977,7 @@ should_defer_restart() {
     return 1
   fi
 
-  second="$(get_interface_bytes "$RESTART_DEFERRAL_INTERFACE")"
-  if [ "$?" -ne 0 ]; then
+  if ! second="$(get_interface_bytes "$RESTART_DEFERRAL_INTERFACE")"; then
     LAST_RESTART_DEFERRAL_RESULT="check_failed"
     log_msg "Restart deferral activity check failed for interface ${RESTART_DEFERRAL_INTERFACE}; proceeding without deferral"
     return 1

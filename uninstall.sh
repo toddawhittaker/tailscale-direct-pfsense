@@ -325,10 +325,15 @@ stop_service() {
         orig_owner="$(stat -f '%Su:%Sg' "$RCCONF_LOCAL" 2>/dev/null)"
 
         if mv "$rcconf_tmp" "$RCCONF_LOCAL" 2>/dev/null; then
-          [ -n "$orig_mode" ] && \
+          # Restoring mode and ownership is best effort: a failure here must
+          # not abort the rest of the uninstall, which is why each call keeps
+          # its `|| true`.
+          if [ -n "$orig_mode" ]; then
             chmod "0${orig_mode}" "$RCCONF_LOCAL" 2>/dev/null || true
-          [ -n "$orig_owner" ] && \
+          fi
+          if [ -n "$orig_owner" ]; then
             chown "$orig_owner" "$RCCONF_LOCAL" 2>/dev/null || true
+          fi
           ok "Removed ${SERVICE_NAME}_* settings from ${RCCONF_LOCAL}."
         else
           rm -f "$rcconf_tmp" 2>/dev/null || true

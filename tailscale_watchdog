@@ -164,6 +164,10 @@ tailscale_watchdog_start() {
     return 1
   }
 
+  # Both expansions are deliberately unquoted: tailscale_watchdog_flags must
+  # word-split so that a value such as "-f /path/to.conf" reaches the daemon as
+  # two arguments.  See the note in the file header.
+  # shellcheck disable=SC2086
   ${tailscale_watchdog_command} ${tailscale_watchdog_flags} \
     >"$start_log" 2>&1 &
   daemon_pid=$!
