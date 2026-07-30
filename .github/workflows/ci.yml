@@ -143,10 +143,31 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install shellcheck
+      # Pinned rather than installed from apt.  The runner image's shellcheck
+      # version is not under this repository's control, and the baseline is
+      # version-sensitive: SC2015 fires on 0.9.0 but was dropped in later
+      # releases for the `A && B || true` shape used in uninstall.sh.  With an
+      # apt install, a runner image refresh could turn this job red without a
+      # single line of project code changing -- which matters now that the
+      # baseline is clean and the job is a candidate for becoming required.
+      #
+      # The checksum is verified because this downloads a third-party binary
+      # and runs it.  Unlike install.sh, where a checksum committed beside the
+      # payload would add nothing, here it pins an artifact published by
+      # someone else, so it is a real integrity check.
+      - name: Install shellcheck (pinned)
+        env:
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+          set -eu
+          url="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL -o /tmp/shellcheck.tar.xz "$url"
+          echo "${SHELLCHECK_SHA256}  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 \
+            "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
 
       - name: Lint as POSIX sh
         run: |
