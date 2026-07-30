@@ -60,7 +60,7 @@ assert_contains "README documents startup notification setting" \
   "$readme_text" 'NOTIFY_ON_STARTUP=0'
 
 assert_contains "README documents local tailscale name override" \
-  "$readme_text" 'LOCAL_TAILSCALE_NAME="router1"'
+  "$readme_text" 'LOCAL_TAILSCALE_NAME="router0"'
 
 assert_contains "maintainer docs describe notification dispatcher" \
   "$script_reference_text" "Notifications use a small provider dispatcher."
