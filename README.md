@@ -23,7 +23,10 @@ It does not modify your Tailscale account, ACLs, routes, firewall rules, or Tail
 
 ## Requirements
 
-- pfSense
+- pfSense CE 2.7, which is based on FreeBSD 14. This is the platform the
+  project targets and tests against. Other pfSense versions may work, but the
+  scripts rely on FreeBSD userland behavior such as `stat -f`, `jot`, and
+  `netstat -ibn`, which can differ on an older base.
 - Tailscale installed and authenticated
 - root access to the pfSense shell
 - `curl` available on the system

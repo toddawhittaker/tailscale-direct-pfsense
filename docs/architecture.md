@@ -2,13 +2,15 @@
 
 `tailscale-direct-pfsense` is intentionally small: a foreground daemon, an rc.d wrapper, an installer, an uninstaller, one example config, and shell-native tests.
 
-The project targets pfSense on FreeBSD. That choice drives the design:
+The project targets pfSense CE 2.7, which is based on FreeBSD 14. That choice drives the design:
 
 - `/bin/sh` keeps the scripts available on the target system.
 - FreeBSD rc.d is the service model, not systemd.
 - The daemon stays foreground-only. The rc.d wrapper owns backgrounding, pidfile management, startup diagnostics, and stop behavior.
 - Runtime state is minimal and lives under `/var/run/tailscale_watchdog`.
 - Healthy/direct operation avoids per-check disk writes.
+
+The base version is worth stating explicitly because the scripts depend on FreeBSD userland behavior that has no Linux equivalent and can differ across FreeBSD releases: `stat -f '%Su'` and `'%Lp'` for the config permission gate, `jot` for the randomized cooldown, and `netstat -ibn` for interface byte counters. CI pins its FreeBSD VM to 14.0 for that reason; when the supported pfSense base moves, that pin and this page should move with it.
 
 ## Installed Components
 
