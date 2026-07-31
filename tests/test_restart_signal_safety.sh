@@ -53,15 +53,23 @@ EOF
 cat > "${fakebin}/service" <<'EOF'
 #!/bin/sh
 printf '%s %s\n' "$1" "$2" >> "$SERVICE_LOG"
-if [ "$2" = "stop" ] && [ -n "${SIGNAL_TARGET_PID:-}" ]; then
+# SIGNAL_ON_SLEEP moves the signal to the settle instead, so the two cases do
+# not both fire.
+if [ "$2" = "stop" ] && [ -n "${SIGNAL_TARGET_PID:-}" ] && [ -z "${SIGNAL_ON_SLEEP:-}" ]; then
   kill -TERM "$SIGNAL_TARGET_PID"
 fi
 exit 0
 EOF
 
+# SIGNAL_ON_SLEEP delivers the TERM during the settle instead of during the
+# stop, which is the case where a settle is already sleeping and must run to
+# completion rather than being skipped.
 cat > "${fakebin}/sleep" <<'EOF'
 #!/bin/sh
 printf 'sleep %s\n' "$1" >> "$SERVICE_LOG"
+if [ -n "${SIGNAL_ON_SLEEP:-}" ] && [ -n "${SIGNAL_TARGET_PID:-}" ]; then
+  kill -TERM "$SIGNAL_TARGET_PID"
+fi
 exit 0
 EOF
 
@@ -93,7 +101,7 @@ STATE_DIR="$TEST_STATE_DIR"
 NEXT_RESTART_FILE="${TEST_STATE_DIR}/next_restart_allowed"
 
 PEERS="router1"
-RESTART_SERVICES="pfsense_tailscaled"
+RESTART_SERVICES="${TEST_RESTART_SERVICES:-pfsense_tailscaled}"
 RESTART_SETTLE_SECONDS=3
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=900
@@ -135,8 +143,10 @@ service_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
 
 assert_contains "TERM between stop and start still runs the start" \
   "$service_log" "pfsense_tailscaled start"
-assert_eq "TERM between stop and start completes the whole sequence" \
-  "$(printf 'pfsense_tailscaled stop\nsleep 3\npfsense_tailscaled start')" \
+# The trap runs as soon as the stop's command substitution returns, which is
+# before the settle check, so this settle is dropped rather than taken.
+assert_eq "TERM during the stop skips the settle and still starts" \
+  "$(printf 'pfsense_tailscaled stop\npfsense_tailscaled start')" \
   "$service_log"
 assert_eq "deferred shutdown exits zero" "0" "$signal_rc"
 assert_not_contains "deferred shutdown exits rather than returning" \
@@ -165,6 +175,81 @@ assert_contains "restart without a signal does not exit early" \
   "$(cat "$SERVICE_LOG" 2>/dev/null)" "returned normally"
 assert_not_contains "restart without a signal logs no shutdown" \
   "$(cat "$LOGGER_LOG" 2>/dev/null)" "Daemon stopping"
+
+# ---- Multi-service list: every stopped service still gets started -----------
+#
+# This is the shape a preserved live config has, and it is where the deadline
+# actually bites: the critical section spans the whole list, but the rc
+# wrapper's SIGKILL budget is a single window measured from the TERM.  Once a
+# shutdown is pending the remaining settles are skipped, so only the stops and
+# starts stay on that path -- and, crucially, the second service is started
+# rather than left stopped.
+
+TEST_STATE_DIR="${tmpdir}/state-multi"
+NEXT_RESTART_FILE="${TEST_STATE_DIR}/next_restart_allowed"
+SERVICE_LOG="${tmpdir}/service-multi.log"
+LOGGER_LOG="${tmpdir}/logger-multi.log"
+SIGNAL_SELF=1
+TEST_RESTART_SERVICES="tailscaled pfsense_tailscaled"
+export TEST_STATE_DIR NEXT_RESTART_FILE SERVICE_LOG LOGGER_LOG SIGNAL_SELF \
+  TEST_RESTART_SERVICES
+
+sh "${tmpdir}/run_restart.sh"
+multi_rc=$?
+
+multi_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
+
+# The TERM lands on the first stop.  That first settle is still taken -- the
+# trap cannot run until the stop's command substitution returns -- and every
+# later settle is dropped.
+assert_eq "multi-service shutdown starts every stopped service" \
+  "$(printf 'tailscaled stop\ntailscaled start\npfsense_tailscaled stop\npfsense_tailscaled start')" \
+  "$multi_log"
+assert_not_contains "multi-service shutdown drops the remaining settles" \
+  "$multi_log" "sleep 3"
+assert_contains "multi-service shutdown starts the second service" \
+  "$multi_log" "pfsense_tailscaled start"
+assert_eq "multi-service deferred shutdown exits zero" "0" "$multi_rc"
+assert_not_contains "multi-service shutdown does not return normally" \
+  "$multi_log" "returned normally"
+
+# Without a signal every service keeps its settle.
+TEST_STATE_DIR="${tmpdir}/state-multi-plain"
+NEXT_RESTART_FILE="${TEST_STATE_DIR}/next_restart_allowed"
+SERVICE_LOG="${tmpdir}/service-multi-plain.log"
+LOGGER_LOG="${tmpdir}/logger-multi-plain.log"
+SIGNAL_SELF=""
+export TEST_STATE_DIR NEXT_RESTART_FILE SERVICE_LOG LOGGER_LOG SIGNAL_SELF
+
+sh "${tmpdir}/run_restart.sh"
+
+assert_eq "multi-service without a signal keeps every settle" \
+  "$(printf 'tailscaled stop\nsleep 3\ntailscaled start\npfsense_tailscaled stop\nsleep 3\npfsense_tailscaled start\nreturned normally')" \
+  "$(cat "$SERVICE_LOG" 2>/dev/null)"
+
+# TERM delivered during the settle itself: that sleep is already running, so it
+# completes rather than being skipped, and only the later ones are dropped.
+# This is the single full settle the cap in validate_config is sized against.
+TEST_STATE_DIR="${tmpdir}/state-sleep-signal"
+NEXT_RESTART_FILE="${TEST_STATE_DIR}/next_restart_allowed"
+SERVICE_LOG="${tmpdir}/service-sleep-signal.log"
+LOGGER_LOG="${tmpdir}/logger-sleep-signal.log"
+SIGNAL_SELF=1
+SIGNAL_ON_SLEEP=1
+export TEST_STATE_DIR NEXT_RESTART_FILE SERVICE_LOG LOGGER_LOG SIGNAL_SELF \
+  SIGNAL_ON_SLEEP
+
+sh "${tmpdir}/run_restart.sh"
+sleep_signal_rc=$?
+
+assert_eq "TERM during a settle completes it and drops only later ones" \
+  "$(printf 'tailscaled stop\nsleep 3\ntailscaled start\npfsense_tailscaled stop\npfsense_tailscaled start')" \
+  "$(cat "$SERVICE_LOG" 2>/dev/null)"
+assert_eq "TERM during a settle still exits zero" "0" "$sleep_signal_rc"
+
+SIGNAL_ON_SLEEP=""
+TEST_RESTART_SERVICES=""
+export SIGNAL_ON_SLEEP TEST_RESTART_SERVICES
 
 # ---- Outside a restart, shutdown is still immediate -------------------------
 

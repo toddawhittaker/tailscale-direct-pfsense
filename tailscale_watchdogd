@@ -417,18 +417,31 @@ validate_config() {
     echo "RESTART_SETTLE_SECONDS must be a non-negative integer: $RESTART_SETTLE_SECONDS" >&2
     exit 2
   fi
-  # Bounded by the rc wrapper's shutdown budget, not by taste.  The wrapper
-  # sends TERM and escalates to SIGKILL after 5 seconds.  A shutdown arriving
-  # during a restart is deferred until the service start has run, but SIGKILL
-  # cannot be deferred: if it lands while this settle is still sleeping, the
-  # service has been stopped and never started, which is the state this whole
-  # sequence exists to avoid.  Keeping the settle under the escalation window
-  # means the start has always been spawned by then, and the wrapper signals
-  # only the daemon's own pid, so an in-flight start completes regardless.
+  # Bounded by the rc wrapper's shutdown budget, not by taste.
+  # tailscale_watchdog_stop sends TERM and escalates to SIGKILL after 10
+  # seconds.  (The 5-second escalation in kill_and_wait is a different path --
+  # it only cleans up a just-started daemon whose pidfile write failed, which
+  # cannot be mid-restart.)  A shutdown arriving during a restart is deferred
+  # until the starts have run, but SIGKILL cannot be deferred: if it lands
+  # while a settle is still sleeping, a service has been stopped and never
+  # started, which is the state this whole sequence exists to avoid.
   #
-  # Raising this requires raising the wrapper's escalation window in step.
+  # A settle already sleeping when the signal arrives runs to completion, since
+  # the trap cannot run until the sleep returns.  Settles not yet started are
+  # skipped once a shutdown is pending -- see restart_tailscale_services -- so
+  # at most one full settle sits on the deadline path however many services are
+  # configured.  The cap keeps that single pause well inside the 10-second
+  # window with room for the stops and starts themselves.
+  #
+  # The bound is validated first: it lives in the same namespace the live
+  # config is sourced into, and a non-numeric value would make the comparison
+  # below fail rather than reject, silently disabling the cap.
+  if ! is_positive_int "$RESTART_SETTLE_SECONDS_MAX"; then
+    echo "RESTART_SETTLE_SECONDS_MAX must be a positive integer: $RESTART_SETTLE_SECONDS_MAX" >&2
+    exit 2
+  fi
   if [ "$RESTART_SETTLE_SECONDS" -gt "$RESTART_SETTLE_SECONDS_MAX" ]; then
-    echo "RESTART_SETTLE_SECONDS must be <= ${RESTART_SETTLE_SECONDS_MAX} (the rc wrapper escalates to SIGKILL after 5s): $RESTART_SETTLE_SECONDS" >&2
+    echo "RESTART_SETTLE_SECONDS must be <= ${RESTART_SETTLE_SECONDS_MAX} (the rc wrapper escalates to SIGKILL 10s after TERM): $RESTART_SETTLE_SECONDS" >&2
     exit 2
   fi
   _noglob_was_set=0
@@ -1244,6 +1257,10 @@ restart_tailscale_services() {
   # and then runs the trap, so a plain exit there would skip the start and leave
   # Tailscale down.  handle_shutdown records the request instead; the exit
   # happens below, after the loop and after the shell options are restored.
+  #
+  # Do not add an early return between here and the matching RESTART_CRITICAL=0
+  # below.  Leaving the flag set would make handle_shutdown defer every later
+  # signal, and the daemon would never stop again without SIGKILL.
   RESTART_CRITICAL=1
   for svc in $RESTART_SERVICES; do
     # Stop and start as separate invocations rather than `service ... restart`.
@@ -1277,14 +1294,26 @@ restart_tailscale_services() {
       log_msg "Service stop returned rc=${stop_rc} for ${svc}; continuing to start; output=${stop_output}"
     fi
 
-    if [ "$RESTART_SETTLE_SECONDS" -gt 0 ]; then
+    if [ "$RESTART_SETTLE_SECONDS" -gt 0 ] && [ "$SHUTDOWN_PENDING" -eq 0 ]; then
       # A plain sleep, not watchdog_sleep.  watchdog_sleep exists so the main
       # loop's inter-check wait can be cut short by a signal, which needs
       # SLEEP_PID bookkeeping that only makes sense outside a restart.  Here the
-      # critical section above is what keeps a signal from stripping the start,
-      # so the sleep does not need to be interruptible.  Worst case it delays
-      # shutdown by RESTART_SETTLE_SECONDS per service, which is why the value
-      # is capped -- see validate_config.
+      # critical section is what keeps a signal from stripping the start, so the
+      # sleep does not need to be interruptible.
+      #
+      # Skipped once a shutdown is pending.  The critical section covers the
+      # whole list, but the rc wrapper's SIGKILL deadline is a single budget
+      # measured from the TERM, so with several services the settles would add
+      # up and a later service could still be stopped when the SIGKILL lands.
+      # Dropping the remaining pauses keeps only the stops and starts on the
+      # deadline path.  It costs settling time on the way down, which is the
+      # right trade: leaving a service stopped is unrecoverable, a less
+      # effective final restart is not.
+      #
+      # A settle already sleeping still runs to completion -- the trap cannot
+      # run until the sleep returns -- so at most one full settle sits on the
+      # deadline path, and only when the signal arrives during it.  That single
+      # pause is what the cap in validate_config is sized against.
       sleep "$RESTART_SETTLE_SECONDS"
     fi
 

@@ -78,7 +78,17 @@ So the loop is a critical section. `handle_shutdown` records the request in `SHU
 
 The settle pause uses a plain `sleep` rather than the interruptible `watchdog_sleep`. That is not what protects the start — the critical section is. `watchdog_sleep` exists so the main loop's inter-check wait can be cut short, which needs `SLEEP_PID` bookkeeping that only makes sense outside a restart.
 
-`RESTART_SETTLE_SECONDS` is capped at 4 for a related reason. The rc wrapper sends `TERM` and escalates to `SIGKILL` after 5 seconds, and `SIGKILL` cannot be deferred. If it landed while the settle was still sleeping, the service would be stopped and never started. Keeping the settle inside the escalation window means the start has always been spawned by then — and the wrapper signals only the daemon's own pid, so an in-flight start completes regardless. Raising the cap requires raising the wrapper's escalation window in step.
+`RESTART_SETTLE_SECONDS` is capped at 4 for a related reason. `tailscale_watchdog_stop` in the rc wrapper sends `TERM` and escalates to `SIGKILL` after 10 seconds, and `SIGKILL` cannot be deferred. (The 5-second escalation in `kill_and_wait` is a different path — it only cleans up a just-started daemon whose pidfile write failed, which cannot be mid-restart.) If a `SIGKILL` landed while a settle was still sleeping, that service would be stopped and never started.
+
+The deadline is a single budget measured from the `TERM`, while the critical section spans the whole `RESTART_SERVICES` list — so a per-service bound would not be enough. With two services and a 3-second settle, the sleeps alone consume 6 seconds before either `service` invocation's own runtime, and the second service could still be stopped when the `SIGKILL` arrives. That is the same unrecoverable state, and on a preserved config it would strand `pfsense_tailscaled` specifically, since it is the second entry.
+
+So settles that have not started yet are skipped once a shutdown is pending. A settle already sleeping runs to completion, because the trap cannot run until the sleep returns; settles not yet reached are dropped. At most one full settle therefore sits on the deadline path, however many services are configured, and the cap is sized against that single pause. Only the stops and starts remain — and the wrapper signals only the daemon's own pid, so an in-flight start completes regardless.
+
+Skipping the pauses costs settling quality on the way down. That is the right trade: leaving a service stopped is unrecoverable, a less effective final restart is not.
+
+Raising the cap requires raising the wrapper's 10-second window in step. The cap is validated before use because it lives in the namespace the live config is sourced into, and a non-numeric value would make the comparison error out and take the else branch — silently disabling the bound rather than rejecting the config.
+
+The daemon does not bound the critical section itself. A `stop` blocked on a wedged `tailscaled`, or a `start` waiting on `tailscale0`, holds it open for as long as those take, and `TERM` and `INT` are both deferred for that whole time. That is inherent to the deferral and is the correct trade against exiting mid-restart, but it does mean the cap governs only the portion of the window the daemon controls.
 
 ## Decision Flow
 
