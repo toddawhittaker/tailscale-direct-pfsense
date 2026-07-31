@@ -78,10 +78,6 @@ RESTART_SERVICES="pfsense_tailscaled"
 # restart_tailscale_services for why the stop and start are separate.  Set to 0
 # to stop and start back to back.  Capped; see validate_config.
 RESTART_SETTLE_SECONDS=3
-RESTART_SETTLE_SECONDS_MAX=4
-# Template for the temp file that captures service command output.  See
-# run_service_command for why the output cannot go through a pipe.
-SERVICE_OUTPUT_TEMPLATE="/tmp/tailscale_watchdog.service.XXXXXX"
 RESTART_DEFERRAL_ENABLED=1
 RESTART_DEFERRAL_INTERFACE="tailscale0"
 RESTART_DEFERRAL_CHECK_SECONDS=30
@@ -97,28 +93,63 @@ STATE_DIR="/var/run/tailscale_watchdog"
 NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 CURL_TIMEOUT=10
 
-# ---- Runtime flags ---------------------------------------------------------
-TEST=0
-ONE_SHOT=0
-DEBUG=0
-RESTART_DEFERRAL_ATTEMPTS=0
-LAST_RESTART_COOLDOWN=""
-LAST_RESTART_NEXT_ALLOWED=""
-LAST_RESTART_DEFERRAL_RESULT=""
-LAST_RESTART_DEFERRAL_DELTA=""
-LAST_RESTART_DEFERRAL_ATTEMPTS=""
-RESOLVED_LOCAL_TAILSCALE_NAME=""
+# ---- Runtime state ---------------------------------------------------------
 
-# Holds the PID of the background sleep process during the main loop so that
-# handle_shutdown can kill it promptly on SIGTERM/SIGINT.
-SLEEP_PID=""
+# reset_runtime_state
+#
+# Assigns every value that is internal state rather than an operator setting.
+# Called once here, and again from main immediately after load_config_file.
+#
+# The second call is the point.  The live config is sourced into this same
+# namespace, so without it any assignment in the config silently becomes
+# runtime state.  That is not hypothetical harm:
+#
+#   SLEEP_PID       handle_shutdown does `kill "$SLEEP_PID"` as root with no
+#                   validation.  SLEEP_PID=1 in a config turns the first
+#                   `service tailscale_watchdog stop` into a SIGTERM to init.
+#   RESTART_CRITICAL  handle_shutdown would defer every signal for the life of
+#                   the daemon, leaving SIGKILL as the only way to stop it.
+#   TEST            the daemon logs "would restart" forever and never restarts
+#                   anything -- a watchdog that has silently stopped watching.
+#   DEBUG           per-check output to a stderr the rc wrapper has already
+#                   unlinked, consuming a RAM-backed /tmp invisibly.
+#
+# This is deliberately one function covering the whole block rather than an
+# enumerated subset re-asserted in main.  An earlier version listed four names
+# there and missed SLEEP_PID, which is the one that reaches a kill.  Add new
+# internal state here and it is covered by construction.
+#
+# CLI options are parsed after main's call, so -t, -1, and -d still win.
+reset_runtime_state() {
+  TEST=0
+  ONE_SHOT=0
+  DEBUG=0
+  RESTART_DEFERRAL_ATTEMPTS=0
+  LAST_RESTART_COOLDOWN=""
+  LAST_RESTART_NEXT_ALLOWED=""
+  LAST_RESTART_DEFERRAL_RESULT=""
+  LAST_RESTART_DEFERRAL_DELTA=""
+  LAST_RESTART_DEFERRAL_ATTEMPTS=""
+  RESOLVED_LOCAL_TAILSCALE_NAME=""
 
-# Set to 1 while restart_tailscale_services is between a service stop and the
-# matching start.  Exiting there would leave Tailscale stopped, so
-# handle_shutdown records the request in SHUTDOWN_PENDING and returns instead;
-# the restart path exits once the start has run.
-RESTART_CRITICAL=0
-SHUTDOWN_PENDING=0
+  # Holds the PID of the background sleep process during the main loop so that
+  # handle_shutdown can kill it promptly on SIGTERM/SIGINT.
+  SLEEP_PID=""
+
+  # Set to 1 while restart_tailscale_services is between a service stop and the
+  # matching start.  Exiting there would leave Tailscale stopped, so
+  # handle_shutdown records the request in SHUTDOWN_PENDING and returns instead;
+  # the restart path exits once the start has run.
+  RESTART_CRITICAL=0
+  SHUTDOWN_PENDING=0
+
+  # Derived from the rc wrapper's SIGKILL escalation window, not chosen.
+  RESTART_SETTLE_SECONDS_MAX=4
+
+  # Where a root daemon creates files; see run_service_command.
+  SERVICE_OUTPUT_TEMPLATE="/tmp/tailscale_watchdog.service.XXXXXX"
+}
+reset_runtime_state
 
 # ---- Utility functions -----------------------------------------------------
 
@@ -1640,22 +1671,9 @@ main() {
 
   load_config_file "$CONFIG_FILE"
 
-  # Re-assert internal state that is not an operator setting.  The live config
-  # is sourced into this same namespace, so a stray assignment there would
-  # otherwise take effect: RESTART_CRITICAL=1 would make handle_shutdown defer
-  # every signal for the life of the daemon, leaving SIGKILL as the only way to
-  # stop it; a non-numeric SHUTDOWN_PENDING would make the settle guard error
-  # instead of compare.  RESTART_SETTLE_SECONDS_MAX is derived from the rc
-  # wrapper's escalation window rather than chosen, so it is not a knob either,
-  # and SERVICE_OUTPUT_TEMPLATE decides where a root daemon creates files.
-  #
-  # The defaults at the top of the file remain the single source of the values;
-  # these lines must be kept in step with them.  tests/test_config_validation.sh
-  # asserts each one is present here as a whole line.
-  RESTART_CRITICAL=0
-  SHUTDOWN_PENDING=0
-  RESTART_SETTLE_SECONDS_MAX=4
-  SERVICE_OUTPUT_TEMPLATE="/tmp/tailscale_watchdog.service.XXXXXX"
+  # Discard anything the live config assigned to internal runtime state.  See
+  # reset_runtime_state for why, and for what each of those values reaches.
+  reset_runtime_state
 
   # ---- Option parsing ------------------------------------------------------
   OPTIND=1

@@ -216,16 +216,60 @@ expect_invalid_config "restart settle seconds above the cap fails" \
 # "the cap.  RESTART_SETTLE_SECONDS_MAX=4 came from the wrapper" passed while
 # the code itself was gone.  Requiring exactly one whole line makes replacement
 # by a comment fail, not just deletion.
+#
+# The daemon does this with one reset_runtime_state covering the whole block
+# rather than an enumerated list in main.  An earlier version enumerated four
+# names and missed SLEEP_PID -- the one handle_shutdown passes to kill as root
+# -- so these assertions check the mechanism, then check the function covers
+# every internal, rather than trusting a list in two places.
 reassert_block="$(sed -n '/^  load_config_file "\$CONFIG_FILE"$/,/^  # ---- Option parsing/p' \
   "${REPO_ROOT}/tailscale_watchdogd")"
-assert_contains "the re-assert block follows load_config_file" \
+assert_contains "the re-assert follows load_config_file" \
   "$reassert_block" 'load_config_file "$CONFIG_FILE"'
-for internal in RESTART_CRITICAL=0 SHUTDOWN_PENDING=0 RESTART_SETTLE_SECONDS_MAX=4 \
+assert_eq "main discards config-assigned runtime state after loading" \
+  "1" "$(printf '%s\n' "$reassert_block" | grep -c '^  reset_runtime_state$')"
+
+# The reset only helps if nothing sources the config again afterwards.  A
+# second source anywhere -- a drop-in directory, a per-instance override --
+# silently undoes it while every assertion above still passes, so this counts
+# sourcing operations in the whole daemon rather than looking for one shape.
+# The single permitted one is load_config_file's own.
+assert_eq "the daemon sources exactly one file" \
+  "1" "$(grep -c '^[[:space:]]*\(\.\|source\)[[:space:]]' "${REPO_ROOT}/tailscale_watchdogd")"
+assert_eq "and that source is load_config_file's" \
+  "1" "$(grep -c '^  \. "\$file"$' "${REPO_ROOT}/tailscale_watchdogd")"
+assert_eq "load_config_file is called exactly once" \
+  "1" "$(grep -c '^  load_config_file "\$CONFIG_FILE"$' "${REPO_ROOT}/tailscale_watchdogd")"
+
+# Every internal must be inside reset_runtime_state, not merely somewhere in
+# the file.  SLEEP_PID is listed first because it is the one that reaches a
+# kill; TEST and DEBUG because a config setting them silently stops the
+# watchdog watching, or fills a RAM-backed /tmp through an unlinked descriptor.
+reset_body="$(sed -n '/^reset_runtime_state() {$/,/^}$/p' "${REPO_ROOT}/tailscale_watchdogd")"
+for internal in 'SLEEP_PID=""' TEST=0 ONE_SHOT=0 DEBUG=0 RESTART_DEFERRAL_ATTEMPTS=0 \
+  RESTART_CRITICAL=0 SHUTDOWN_PENDING=0 RESTART_SETTLE_SECONDS_MAX=4 \
   'SERVICE_OUTPUT_TEMPLATE="/tmp/tailscale_watchdog.service.XXXXXX"'; do
-  assert_eq "main re-asserts ${internal} after loading the config" \
-    "1" \
-    "$(printf '%s\n' "$reassert_block" | grep -c "^  ${internal}\$")"
+  assert_eq "reset_runtime_state assigns ${internal}" \
+    "1" "$(printf '%s\n' "$reset_body" | grep -c "^  ${internal}\$")"
 done
+
+# The temp-file capture in run_service_command is the whole reason that
+# function exists: a command substitution puts the service child's stdout on a
+# pipe the daemon owns, and a SIGKILL mid-start then kills the orphan with
+# SIGPIPE before it finishes.  The output-marker assertions in
+# test_daemon_restart_flow.sh prove output is captured, but a pipe captures it
+# just as well -- so they stay green if the function reverts.  These do not.
+# Comment lines are stripped first: the surrounding comments legitimately quote
+# `service ... restart` in prose, and matching those would make the check fire
+# on its own explanation.
+daemon_code="$(grep -v '^[[:space:]]*#' "${REPO_ROOT}/tailscale_watchdogd")"
+assert_not_contains "no service invocation inside a command substitution" \
+  "$daemon_code" '$(service '
+assert_not_contains "no service invocation inside backticks" \
+  "$daemon_code" '`service '
+assert_contains "run_service_command redirects service output to a file" \
+  "$(sed -n '/^run_service_command() {$/,/^}$/p' "${REPO_ROOT}/tailscale_watchdogd")" \
+  '>"$_rsc_log" 2>&1'
 
 expect_invalid_service "restart service semicolon fails" 'RESTART_SERVICES="tailscaled bad;svc"'
 expect_invalid_service "restart service command-substitution-shaped value fails" "RESTART_SERVICES='tailscaled \$(id)'"
