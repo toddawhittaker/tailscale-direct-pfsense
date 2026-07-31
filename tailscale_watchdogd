@@ -3,8 +3,9 @@
 # tailscale_watchdogd
 #
 # Foreground daemon that checks selected Tailscale peers once per interval.
-# If a peer is relayed for FAIL_THRESHOLD consecutive checks, restart
-# tailscaled and pfsense_tailscaled, then send an optional notification.
+# If a peer is relayed for FAIL_THRESHOLD consecutive checks, restart the
+# services in RESTART_SERVICES (pfsense_tailscaled by default), then send an
+# optional notification.
 #
 # Documentation:
 #   https://github.com/toddawhittaker/tailscale-direct-pfsense
@@ -78,6 +79,9 @@ RESTART_SERVICES="pfsense_tailscaled"
 # to stop and start back to back.  Capped; see validate_config.
 RESTART_SETTLE_SECONDS=3
 RESTART_SETTLE_SECONDS_MAX=4
+# Template for the temp file that captures service command output.  See
+# run_service_command for why the output cannot go through a pipe.
+SERVICE_OUTPUT_TEMPLATE="/tmp/tailscale_watchdog.service.XXXXXX"
 RESTART_DEFERRAL_ENABLED=1
 RESTART_DEFERRAL_INTERFACE="tailscale0"
 RESTART_DEFERRAL_CHECK_SECONDS=30
@@ -433,13 +437,10 @@ validate_config() {
   # configured.  The cap keeps that single pause well inside the 10-second
   # window with room for the stops and starts themselves.
   #
-  # The bound is validated first: it lives in the same namespace the live
-  # config is sourced into, and a non-numeric value would make the comparison
-  # below fail rather than reject, silently disabling the cap.
-  if ! is_positive_int "$RESTART_SETTLE_SECONDS_MAX"; then
-    echo "RESTART_SETTLE_SECONDS_MAX must be a positive integer: $RESTART_SETTLE_SECONDS_MAX" >&2
-    exit 2
-  fi
+  # The bound is not an operator setting.  main re-asserts it after the live
+  # config is sourced, so a config that assigns RESTART_SETTLE_SECONDS_MAX
+  # cannot raise the cap or, by giving it a non-numeric value, make the
+  # comparison below error out and silently skip the check.
   if [ "$RESTART_SETTLE_SECONDS" -gt "$RESTART_SETTLE_SECONDS_MAX" ]; then
     echo "RESTART_SETTLE_SECONDS must be <= ${RESTART_SETTLE_SECONDS_MAX} (the rc wrapper escalates to SIGKILL 10s after TERM): $RESTART_SETTLE_SECONDS" >&2
     exit 2
@@ -1192,6 +1193,41 @@ check_peer_path() {
 
 # ---- Restart handling ------------------------------------------------------
 
+# run_service_command SERVICE ACTION
+#
+# Runs `service SERVICE ACTION`, leaving the exit status in SVC_RC and any
+# output in SVC_OUTPUT.
+#
+# Output goes to a temp file rather than a command substitution, and that is
+# load-bearing rather than stylistic.  A command substitution makes the child
+# write into a pipe whose read end is this daemon.  If the rc wrapper escalates
+# to SIGKILL while a start is still running, the daemon dies, the pipe closes,
+# and the orphaned `service` is killed by SIGPIPE at its next write -- leaving
+# the service stopped and never started, which is the state the whole deferral
+# path exists to avoid.  Writing to a file leaves the orphan's stdout valid, so
+# it runs to completion even though nothing is left to read the result.
+run_service_command() {
+  SVC_RC=0
+  SVC_OUTPUT=""
+
+  _rsc_log="$(mktemp "$SERVICE_OUTPUT_TEMPLATE" 2>/dev/null)" || _rsc_log=""
+  if [ -z "$_rsc_log" ]; then
+    # Losing the diagnostic is better than reintroducing the pipe.
+    service "$1" "$2" >/dev/null 2>&1
+    SVC_RC=$?
+    SVC_OUTPUT="(output unavailable: could not create temp file)"
+    return 0
+  fi
+
+  service "$1" "$2" >"$_rsc_log" 2>&1
+  SVC_RC=$?
+  # Safe as a command substitution: cat is immediate, and the service command
+  # it is reading for has already finished.
+  SVC_OUTPUT="$(cat "$_rsc_log" 2>/dev/null)"
+  rm -f "$_rsc_log"
+  unset _rsc_log
+}
+
 # warn_redundant_restart_services
 #
 # Logs a startup warning when RESTART_SERVICES lists tailscaled alongside
@@ -1263,6 +1299,16 @@ restart_tailscale_services() {
   # signal, and the daemon would never stop again without SIGKILL.
   RESTART_CRITICAL=1
   for svc in $RESTART_SERVICES; do
+    if [ "$SHUTDOWN_PENDING" -eq 1 ]; then
+      # A service this loop has not reached yet is in a safe state: it is still
+      # running.  Stopping it now would open a fresh stop-to-start window on a
+      # deadline the pending shutdown has already partly spent, and the daemon
+      # is about to exit either way, so the restart buys nothing.  Every service
+      # already stopped has had its start issued; leave the rest alone.
+      log_msg "Shutdown pending; leaving ${svc} running rather than starting another stop/start"
+      break
+    fi
+
     # Stop and start as separate invocations rather than `service ... restart`.
     #
     # This mirrors the pfSense GUI's service control (restart_service() in
@@ -1279,8 +1325,9 @@ restart_tailscale_services() {
     # post-start hook entirely when the start command reports the daemon is
     # still running.  Restarting with no settling time is the shape most likely
     # to hit either case and leave Tailscale up but relay-only.
-    stop_output="$(service "$svc" stop 2>&1)"
-    stop_rc=$?
+    run_service_command "$svc" stop
+    stop_rc="$SVC_RC"
+    stop_output="$SVC_OUTPUT"
     if [ "$stop_rc" -ne 0 ]; then
       # Not a failure.  The GUI skips the stop when the service is not running,
       # and pfsense_tailscaled's stop returns non-zero when tailscaled is
@@ -1301,14 +1348,18 @@ restart_tailscale_services() {
       # critical section is what keeps a signal from stripping the start, so the
       # sleep does not need to be interruptible.
       #
-      # Skipped once a shutdown is pending.  The critical section covers the
-      # whole list, but the rc wrapper's SIGKILL deadline is a single budget
-      # measured from the TERM, so with several services the settles would add
-      # up and a later service could still be stopped when the SIGKILL lands.
-      # Dropping the remaining pauses keeps only the stops and starts on the
-      # deadline path.  It costs settling time on the way down, which is the
-      # right trade: leaving a service stopped is unrecoverable, a less
-      # effective final restart is not.
+      # Skipped once a shutdown is pending, so that only this service's start
+      # remains between here and the exit.  Combined with the break above, the
+      # most the SIGKILL deadline ever has to cover after the signal is one
+      # start.
+      #
+      # It costs settling time on exactly the restart that cannot be retried,
+      # which is a real loss and not a marginal one: with the single-service
+      # default this is the only settle there is, and the settle is what keeps
+      # rc.subr from skipping the post-start hook.  It is still the right trade,
+      # because the failure modes are not symmetric -- a service left stopped is
+      # unrecoverable and takes remote access with it, while a restart that
+      # comes back relayed is merely no better than before.
       #
       # A settle already sleeping still runs to completion -- the trap cannot
       # run until the sleep returns -- so at most one full settle sits on the
@@ -1317,8 +1368,9 @@ restart_tailscale_services() {
       sleep "$RESTART_SETTLE_SECONDS"
     fi
 
-    output="$(service "$svc" start 2>&1)"
-    rc=$?
+    run_service_command "$svc" start
+    rc="$SVC_RC"
+    output="$SVC_OUTPUT"
     if [ "$rc" -eq 0 ]; then
       log_msg "Service restarted successfully: ${svc}"
     else
@@ -1583,6 +1635,17 @@ main() {
   unset next_is_config arg
 
   load_config_file "$CONFIG_FILE"
+
+  # Re-assert internal state that is not an operator setting.  The live config
+  # is sourced into this same namespace, so a stray assignment there would
+  # otherwise take effect: RESTART_CRITICAL=1 would make handle_shutdown defer
+  # every signal for the life of the daemon, leaving SIGKILL as the only way to
+  # stop it; a non-numeric SHUTDOWN_PENDING would make the settle guard error
+  # instead of compare.  RESTART_SETTLE_SECONDS_MAX is derived from the rc
+  # wrapper's escalation window rather than chosen, so it is not a knob either.
+  RESTART_CRITICAL=0
+  SHUTDOWN_PENDING=0
+  RESTART_SETTLE_SECONDS_MAX=4
 
   # ---- Option parsing ------------------------------------------------------
   OPTIND=1
