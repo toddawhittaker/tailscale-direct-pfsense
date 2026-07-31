@@ -1,6 +1,6 @@
 ---
 name: change
-description: End-to-end process for making a change to tailscale-direct-pfsense — branch, plan, implement with the project subagents, review with the reviewer subagents, verify, commit, and open a PR. Stops at the PR and never merges. Use for any non-trivial change to the daemon, rc.d wrapper, installer, uninstaller, tests, or docs.
+description: End-to-end process for making a change to tailscale-direct-pfsense — branch, plan, implement with the project subagents, review with the reviewer subagents, verify, commit, and open a PR, then clean up the branch once the human has merged. Stops at the PR and never merges. Use for any non-trivial change to the daemon, rc.d wrapper, installer, uninstaller, tests, or docs.
 ---
 
 # Making a change
@@ -17,6 +17,7 @@ Confirm a clean starting point, then branch. Never commit directly to `main`.
 git status --short          # must be clean; stop and ask if not
 git checkout main
 git pull --ff-only
+git fetch --prune           # drop remote-tracking refs for branches deleted on merge
 git checkout -b <type>/<slug>    # fix/…, feat/…, docs/…, test/…
 ```
 
@@ -111,3 +112,30 @@ The body should give a reviewer what they need to judge it: what changed and why
 Then **stop and hand back**. Report the PR URL, the review findings, and the test state.
 
 Do not merge. Do not run `gh pr merge`, do not enable auto-merge, do not push further commits to the branch unless asked. If the user reviews and asks you to merge, that is a new instruction — and even then, confirm the merge method before running it.
+
+## 8. Clean up after the merge
+
+This runs only when the human has merged — usually in a later session. Never as part of opening the PR.
+
+The remote branch deletes itself: the repo has `deleteBranchOnMerge` enabled, so GitHub drops the head branch as the merge completes. Nothing to do there, and nothing to re-enable — verify with `gh repo view --json deleteBranchOnMerge` if a stale remote branch ever shows up.
+
+The local branch and its remote-tracking ref do not. Clean both:
+
+```sh
+git checkout main
+git pull --ff-only
+git fetch --prune           # removes origin/<branch> now that the remote is gone
+git branch -D <branch>
+```
+
+**`-D`, not `-d`, and that is not a shortcut.** This project merges by rebase, so the branch's commits land on `main` under new SHAs and the originals are never an ancestor of `main`. `git branch -d` reads as "not fully merged" and refuses; `git branch --merged main` never lists the branch either. Neither is evidence of unmerged work.
+
+Because `-D` skips that safety net, confirm the work actually landed before deleting — match the commit subject against `main`:
+
+```sh
+git log --oneline main | grep -F "<commit subject>"
+```
+
+If the subject is not on `main`, stop: either the PR is still open or something went wrong. Do not delete.
+
+To sweep several merged branches at once, check each subject first, then delete in one go. If a remote branch did survive, `git push origin --delete <branch>` removes it.
