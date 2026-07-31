@@ -21,6 +21,15 @@ assert_contains "rc wrapper validates pid values" "$rc_text" "valid_pid()"
 assert_contains "rc wrapper removes stale pidfile on start" "$rc_text" 'rm -f "$pidfile"'
 assert_contains "rc wrapper captures startup output" "$rc_text" 'start_log="$(mktemp "/tmp/${name}.start.XXXXXX")"'
 assert_contains "rc wrapper starts daemon in background" "$rc_text" '>"$start_log" 2>&1 &'
+# rc.conf flags must word-split, but that split belongs on its own `set --`
+# line rather than on the launch line.  A line-level SC2086 suppression covers
+# every expansion on the line it precedes, including any added later that does
+# need quoting -- and the shellcheck job is blocking, so such a finding would
+# never be reported.  These two assertions keep the suppression narrow.
+assert_contains "rc wrapper word-splits daemon flags via set --" "$rc_text" \
+  'set -- ${tailscale_watchdog_command} ${tailscale_watchdog_flags}'
+assert_contains "rc wrapper launches daemon from split arguments" "$rc_text" \
+  '"$@" >"$start_log" 2>&1 &'
 assert_contains "rc wrapper sends TERM before escalation" "$rc_text" 'kill "$pid" 2>/dev/null'
 assert_contains "rc wrapper escalates to KILL only after wait" "$rc_text" 'kill -KILL "$pid" 2>/dev/null'
 assert_contains "rc wrapper exposes custom status" "$rc_text" 'status_cmd="${name}_status"'

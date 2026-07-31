@@ -167,9 +167,18 @@ tailscale_watchdog_start() {
   # Both expansions are deliberately unquoted: tailscale_watchdog_flags must
   # word-split so that a value such as "-f /path/to.conf" reaches the daemon as
   # two arguments.  See the note in the file header.
+  #
+  # The split is done via `set --` so that the suppression below covers only
+  # this one line.  A line-level disable on the launch itself would also cover
+  # any variable added to it later -- including one that does need quoting --
+  # and the blocking shellcheck job would never see it.  Here the launch line
+  # stays under SC2086, so a future unquoted expansion is still caught.
+  #
+  # Positional parameters are local to a shell function, so this does not
+  # disturb the `run_rc_command "$1"` dispatch at the end of the file.
   # shellcheck disable=SC2086
-  ${tailscale_watchdog_command} ${tailscale_watchdog_flags} \
-    >"$start_log" 2>&1 &
+  set -- ${tailscale_watchdog_command} ${tailscale_watchdog_flags}
+  "$@" >"$start_log" 2>&1 &
   daemon_pid=$!
 
   # $! is shell-assigned and always a valid positive integer; no valid_pid

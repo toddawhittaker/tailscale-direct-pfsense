@@ -105,7 +105,10 @@ jobs:
     # pfSense/FreeBSD.  Blocking on it does not change that.  A new finding
     # here means "look at this", not "shellcheck is correct" -- and the right
     # resolution is sometimes an inline `# shellcheck disable=` with a comment
-    # explaining why the code is right, as at tailscale_watchdog:170.
+    # explaining why the code is right, as in the rc.d wrapper's start path.
+    # Scope such a disable as narrowly as the code allows: a line-level
+    # suppression also covers anything added to that line later, which is how
+    # a real finding goes silently unreported under a blocking job.
     #
     # The exclusions below are not cosmetic -- each one suppresses a check that
     # is actively wrong for this codebase:
