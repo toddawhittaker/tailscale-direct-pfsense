@@ -112,7 +112,10 @@ RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
 
 # Services restarted when the threshold is reached.
-RESTART_SERVICES="tailscaled pfsense_tailscaled"
+RESTART_SERVICES="pfsense_tailscaled"
+
+# Seconds between stopping and starting each service.
+RESTART_SETTLE_SECONDS=3
 
 # Maximum seconds curl may spend attempting a Pushover notification.
 CURL_TIMEOUT=10
@@ -313,6 +316,28 @@ If the service is already running, restart it after the update:
 
 ```sh
 service tailscale_watchdog restart
+```
+
+### Upgrading from a config that lists `tailscaled`
+
+Because your live config is preserved, an older `RESTART_SERVICES` line survives the update. If yours reads:
+
+```sh
+RESTART_SERVICES="tailscaled pfsense_tailscaled"
+```
+
+change it to:
+
+```sh
+RESTART_SERVICES="pfsense_tailscaled"
+```
+
+Restarting `pfsense_tailscaled` already cycles `tailscaled` underneath, and it additionally runs `tailscale up`, restores the `tailscale0` interface group, and reloads the packet filter. Restarting `tailscaled` as well just bounces the daemon a second time without any of that. This matches what the pfSense GUI's service control does.
+
+Optionally add the settle pause, which defaults to 3 seconds if the setting is absent:
+
+```sh
+RESTART_SETTLE_SECONDS=3
 ```
 
 ## Uninstall

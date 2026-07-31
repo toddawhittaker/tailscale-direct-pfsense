@@ -28,7 +28,8 @@ FAIL_THRESHOLD=5
 PING_COUNT=5
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=1800
-RESTART_SERVICES="tailscaled pfsense_tailscaled"
+RESTART_SERVICES="pfsense_tailscaled"
+RESTART_SETTLE_SECONDS=3
 RESTART_DEFERRAL_ENABLED=1
 RESTART_DEFERRAL_INTERFACE="tailscale0"
 RESTART_DEFERRAL_CHECK_SECONDS=30
@@ -180,6 +181,16 @@ expect_invalid_config "cooldown maximum below minimum fails" \
 expect_invalid_config "empty restart services fails" \
   'RESTART_SERVICES=""' \
   "RESTART_SERVICES must not be empty"
+
+# Zero is valid here, unlike the other interval settings: it means stop and
+# start back to back, with no settle pause.
+expect_invalid_config "negative restart settle seconds fails" \
+  'RESTART_SETTLE_SECONDS=-1' \
+  "RESTART_SETTLE_SECONDS must be a non-negative integer"
+
+expect_invalid_config "non-numeric restart settle seconds fails" \
+  'RESTART_SETTLE_SECONDS=abc' \
+  "RESTART_SETTLE_SECONDS must be a non-negative integer"
 
 expect_invalid_service "restart service semicolon fails" 'RESTART_SERVICES="tailscaled bad;svc"'
 expect_invalid_service "restart service command-substitution-shaped value fails" "RESTART_SERVICES='tailscaled \$(id)'"

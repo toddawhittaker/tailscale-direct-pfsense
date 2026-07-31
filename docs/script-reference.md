@@ -20,7 +20,7 @@ main
                                                 should_defer_restart
                                                 restart_tailscale_services
                                                   mark_restart_attempt   (writes cooldown)
-                                                  service restarts
+                                                  service stop / settle / start
                                                   reset_all_peer_state_after_restart (on success)
 ```
 

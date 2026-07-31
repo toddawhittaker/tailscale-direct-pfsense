@@ -94,7 +94,20 @@ RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
 
 # Services to restart when the relay threshold is reached.
-RESTART_SERVICES="tailscaled pfsense_tailscaled"
+#
+# pfsense_tailscaled alone is correct on pfSense: its rc.d stop and start
+# already cycle tailscaled underneath, and its post-start hook runs
+# "tailscale up", re-adds tailscale0 to the Tailscale interface group, and
+# reloads the packet filter.  Restarting tailscaled as well bounces the daemon
+# twice and does none of that extra work.  The pfSense GUI's service control
+# restarts pfsense_tailscaled alone for the same reason.
+RESTART_SERVICES="pfsense_tailscaled"
+
+# Seconds to wait between stopping and starting each service.  The daemon stops
+# and starts as separate steps rather than issuing "service ... restart", which
+# matches what the pfSense GUI does.  The pause gives tailscale0 time to go away
+# before the start hook waits for it to come back.  Set to 0 for no pause.
+RESTART_SETTLE_SECONDS=3
 
 # ---- Notification behavior --------------------------------------------------
 

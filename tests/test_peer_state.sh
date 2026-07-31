@@ -74,7 +74,10 @@ export PATH
 PEERS="router1 router2"
 FAIL_THRESHOLD=2
 PING_COUNT=5
-RESTART_SERVICES="tailscaled pfsense_tailscaled"
+RESTART_SERVICES="pfsense_tailscaled"
+# No settle pause here; test_daemon_restart_flow.sh owns the stop/settle/start
+# sequence, and a pause would add entries to HOST_TOOL_LOG for no benefit.
+RESTART_SETTLE_SECONDS=0
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=900
 STATE_DIR="${tmpdir}/state"
@@ -155,7 +158,7 @@ set_peer_attr threshold_seen router1 none
 handle_relayed router1
 service_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
 assert_contains "first peer threshold restarts service" \
-  "$service_log" "tailscaled restart"
+  "$service_log" "pfsense_tailscaled start"
 assert_file_exists "first peer restart writes global cooldown" "$NEXT_RESTART_FILE"
 
 SERVICE_LOG="${tmpdir}/service-global-second.log"

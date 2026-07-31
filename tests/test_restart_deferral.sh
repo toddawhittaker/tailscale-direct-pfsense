@@ -130,7 +130,10 @@ export PATH
 PEERS="router1 router2"
 FAIL_THRESHOLD=2
 PING_COUNT=5
-RESTART_SERVICES="tailscaled pfsense_tailscaled"
+RESTART_SERVICES="pfsense_tailscaled"
+# No settle pause: this file asserts on SLEEP_LOG to verify deferral timing, and
+# a restart settle would add its own entry there.
+RESTART_SETTLE_SECONDS=0
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=900
 RESTART_DEFERRAL_ENABLED=1
@@ -195,7 +198,7 @@ export SERVICE_LOG
 export LOGGER_LOG
 handle_relayed router1
 assert_contains "quiet traffic allows restart" \
-  "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
+  "$(cat "$SERVICE_LOG" 2>/dev/null)" "pfsense_tailscaled start"
 assert_file_exists "quiet traffic writes cooldown state" "$NEXT_RESTART_FILE"
 assert_eq "quiet traffic resets deferral attempts" \
   "0" "$RESTART_DEFERRAL_ATTEMPTS"
@@ -229,7 +232,7 @@ export SERVICE_LOG
 export LOGGER_LOG
 handle_relayed router1
 assert_contains "malformed activity output proceeds with restart" \
-  "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
+  "$(cat "$SERVICE_LOG" 2>/dev/null)" "pfsense_tailscaled start"
 assert_file_exists "malformed activity output writes cooldown state" "$NEXT_RESTART_FILE"
 
 reset_restart_state
@@ -240,7 +243,7 @@ export SERVICE_LOG
 export LOGGER_LOG
 handle_relayed router1
 assert_contains "missing interface proceeds with restart" \
-  "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
+  "$(cat "$SERVICE_LOG" 2>/dev/null)" "pfsense_tailscaled start"
 
 reset_restart_state
 reset_fake_netstat second_fails
@@ -250,7 +253,7 @@ export SERVICE_LOG
 export LOGGER_LOG
 handle_relayed router1
 assert_contains "failure on the second activity sample proceeds with restart" \
-  "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
+  "$(cat "$SERVICE_LOG" 2>/dev/null)" "pfsense_tailscaled start"
 assert_file_exists "failure on the second activity sample writes cooldown state" \
   "$NEXT_RESTART_FILE"
 assert_contains "failure on the second activity sample logs the check failure" \
@@ -269,7 +272,7 @@ export LOGGER_LOG
 RESTART_DEFERRAL_ATTEMPTS=2
 handle_relayed router1
 assert_contains "max deferrals proceeds with restart" \
-  "$(cat "$SERVICE_LOG" 2>/dev/null)" "tailscaled restart"
+  "$(cat "$SERVICE_LOG" 2>/dev/null)" "pfsense_tailscaled start"
 assert_eq "max deferrals skips activity sampling" \
   "missing" "$([ -f "$NETSTAT_LOG" ] && cat "$NETSTAT_LOG" || printf 'missing')"
 

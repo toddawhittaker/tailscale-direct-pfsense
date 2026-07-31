@@ -59,6 +59,7 @@ Preserve watchdog behavior:
 * Sustained DERP/relay-only paths count as failures.
 * Unknown/no usable path is not relayed and breaks the consecutive-relay sequence.
 * Restart configured Tailscale services only after `FAIL_THRESHOLD` consecutive relayed classifications for a peer.
+* Restart services by running `stop`, pausing `RESTART_SETTLE_SECONDS`, then `start` — never `service ... restart`. This mirrors the pfSense GUI's service control and gives `pfsense_tailscaled`'s post-start hook time to see `tailscale0` leave before it waits for it to return; that hook is what runs `tailscale up` and reloads the packet filter. A failing `stop` is not a restart failure; only the `start` decides. See `docs/daemon-behavior.md`.
 * Restart cooldown uses `RESTART_COOLDOWN_MIN` and `RESTART_COOLDOWN_MAX`.
 * Active cooldown state file: `/var/run/tailscale_watchdog/next_restart_allowed`.
 * Restart deferral, when enabled, is global, bounded, and must not write cooldown state unless a restart is actually attempted.

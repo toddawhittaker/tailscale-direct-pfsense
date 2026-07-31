@@ -40,6 +40,14 @@ cat > "${fakebin}/jot" <<'EOF'
 printf '%s\n' 900
 EOF
 
+# Records the settle pause instead of actually sleeping, so the suite stays fast
+# and can assert that the pause happened between the stop and the start.
+cat > "${fakebin}/sleep" <<'EOF'
+#!/bin/sh
+printf 'sleep %s\n' "$1" >> "$SERVICE_LOG"
+exit 0
+EOF
+
 cat > "${fakebin}/service" <<'EOF'
 #!/bin/sh
 if [ "${REQUIRE_COOLDOWN_BEFORE_SERVICE:-0}" -eq 1 ] && [ ! -f "$NEXT_RESTART_FILE" ]; then
@@ -47,6 +55,11 @@ if [ "${REQUIRE_COOLDOWN_BEFORE_SERVICE:-0}" -eq 1 ] && [ ! -f "$NEXT_RESTART_FI
   exit 2
 fi
 printf '%s %s\n' "$1" "$2" >> "$SERVICE_LOG"
+# SERVICE_STOP_FAIL exercises the pfSense case where the stop reports failure
+# because the daemon is already down; only the start decides the outcome.
+if [ "${SERVICE_STOP_FAIL:-0}" -eq 1 ] && [ "$2" = "stop" ]; then
+  exit 1
+fi
 case "$SERVICE_FAIL" in
   1)
     exit 1
@@ -56,7 +69,7 @@ exit 0
 EOF
 
 chmod 755 "${fakebin}/logger" "${fakebin}/curl" "${fakebin}/date" \
-  "${fakebin}/jot" "${fakebin}/service"
+  "${fakebin}/jot" "${fakebin}/service" "${fakebin}/sleep"
 
 PATH="${fakebin}:/usr/bin:/bin"
 export PATH
@@ -64,14 +77,17 @@ export PATH
 SERVICE_LOG="${tmpdir}/service.log"
 LOGGER_LOG="${tmpdir}/logger.log"
 SERVICE_FAIL=0
+SERVICE_STOP_FAIL=0
 REQUIRE_COOLDOWN_BEFORE_SERVICE=1
-export SERVICE_LOG LOGGER_LOG SERVICE_FAIL REQUIRE_COOLDOWN_BEFORE_SERVICE
+export SERVICE_LOG LOGGER_LOG SERVICE_FAIL SERVICE_STOP_FAIL \
+  REQUIRE_COOLDOWN_BEFORE_SERVICE
 
 STATE_DIR="${tmpdir}/state"
 NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 export NEXT_RESTART_FILE
 PEERS="router1 router2"
-RESTART_SERVICES="tailscaled pfsense_tailscaled"
+RESTART_SERVICES="pfsense_tailscaled"
+RESTART_SETTLE_SECONDS=3
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=900
 PUSHOVER_TOKEN=""
@@ -97,8 +113,17 @@ assert_eq "successful restart marks router1 post_restart" \
 assert_file_exists "restart writes cooldown state" "$NEXT_RESTART_FILE"
 
 service_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
-assert_contains "restart flow restarts tailscaled" "$service_log" "tailscaled restart"
-assert_contains "restart flow restarts pfsense_tailscaled" "$service_log" "pfsense_tailscaled restart"
+# Stop, settle, start -- as separate invocations, matching the pfSense GUI's
+# service control.  A plain "service ... restart" gives the rc.d post-start hook
+# no time for tailscale0 to go away before it waits for it to return.
+assert_eq "restart flow stops, settles, then starts" \
+  "$(printf 'pfsense_tailscaled stop\nsleep 3\npfsense_tailscaled start')" \
+  "$service_log"
+assert_not_contains "restart flow does not use the restart verb" \
+  "$service_log" "pfsense_tailscaled restart"
+assert_not_contains "restart flow does not bounce tailscaled separately" \
+  "$service_log" "tailscaled stop
+tailscaled start"
 assert_not_contains "service was not called before cooldown write" \
   "$service_log" "missing cooldown before service"
 logger_log="$(cat "$LOGGER_LOG" 2>/dev/null)"
@@ -127,6 +152,44 @@ assert_eq "failed restart preserves router2 counter" \
 assert_contains "failed restart logs selected cooldown" \
   "$(cat "$LOGGER_LOG" 2>/dev/null)" "Restart cooldown selected: cooldown=900s"
 
+# A failing stop must not fail the restart.  The pfSense GUI skips the stop
+# entirely when the service is not running, and pfsense_tailscaled's stop
+# returns non-zero when tailscaled is already down.  Only the start decides.
+SERVICE_FAIL=0
+SERVICE_STOP_FAIL=1
+export SERVICE_FAIL SERVICE_STOP_FAIL
+SERVICE_LOG="${tmpdir}/stop-fail.log"
+LOGGER_LOG="${tmpdir}/logger-stop-fail.log"
+export SERVICE_LOG LOGGER_LOG
+
+set_peer_attr count router1 5
+set_peer_attr state router1 relayed
+
+restart_tailscale_services router1 5 >/dev/null 2>&1
+rc=$?
+assert_eq "failing stop does not fail the restart" "0" "$rc"
+assert_eq "failing stop still resets counters" \
+  "0" "$(get_peer_attr count router1 unset)"
+assert_contains "failing stop still runs the start" \
+  "$(cat "$SERVICE_LOG" 2>/dev/null)" "pfsense_tailscaled start"
+
+# A zero settle skips the pause entirely rather than calling sleep 0.
+SERVICE_STOP_FAIL=0
+export SERVICE_STOP_FAIL
+RESTART_SETTLE_SECONDS=0
+SERVICE_LOG="${tmpdir}/no-settle.log"
+LOGGER_LOG="${tmpdir}/logger-no-settle.log"
+export SERVICE_LOG LOGGER_LOG
+
+set_peer_attr count router1 5
+set_peer_attr state router1 relayed
+
+restart_tailscale_services router1 5 >/dev/null 2>&1
+assert_eq "zero settle stops and starts with no pause" \
+  "$(printf 'pfsense_tailscaled stop\npfsense_tailscaled start')" \
+  "$(cat "$SERVICE_LOG" 2>/dev/null)"
+
+RESTART_SETTLE_SECONDS=3
 SERVICE_FAIL=0
 export SERVICE_FAIL
 SERVICE_LOG="${tmpdir}/cooldown-write-fail.log"
