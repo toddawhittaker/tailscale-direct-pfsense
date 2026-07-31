@@ -192,6 +192,13 @@ expect_invalid_config "non-numeric restart settle seconds fails" \
   'RESTART_SETTLE_SECONDS=abc' \
   "RESTART_SETTLE_SECONDS must be a non-negative integer"
 
+# Capped because the rc wrapper escalates to SIGKILL 5s after TERM.  A settle
+# longer than that window can be killed mid-pause, with the service stopped and
+# never started -- exactly the state the stop/start split exists to avoid.
+expect_invalid_config "restart settle seconds above the cap fails" \
+  'RESTART_SETTLE_SECONDS=60' \
+  "RESTART_SETTLE_SECONDS must be <= 4"
+
 expect_invalid_service "restart service semicolon fails" 'RESTART_SERVICES="tailscaled bad;svc"'
 expect_invalid_service "restart service command-substitution-shaped value fails" "RESTART_SERVICES='tailscaled \$(id)'"
 expect_invalid_service "restart service path traversal fails" 'RESTART_SERVICES="tailscaled ../service"'

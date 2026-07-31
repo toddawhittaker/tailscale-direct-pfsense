@@ -66,9 +66,19 @@ That gap matters because the post-start hook is fragile in two ways, and both fa
 
 `RESTART_SETTLE_SECONDS` (default 3) is the pause between the stop and the start. Set it to 0 to stop and start back to back.
 
-The stop's exit status is deliberately ignored. The GUI skips the stop when the service is not running, and the wrapper's stop returns non-zero when `tailscaled` is already down; neither is a failure. Only the start decides whether the restart succeeded, which keeps the success and failure paths — counter reset versus counter retention — unchanged.
+The stop's exit status is deliberately ignored. The GUI skips the stop when the service is not running, and the wrapper's stop returns non-zero when `tailscaled` is already down; neither is a failure. Only the start decides whether the restart succeeded, which keeps the success and failure paths — counter reset versus counter retention — unchanged. It is still logged through `logger`, because a stop that fails for some *other* reason is the one condition that makes this whole sequence ineffective: rc.subr skips the post-start hook when the start finds the daemon still running, and the restart would otherwise be reported as a success with nothing in syslog to explain the persistent relaying.
 
-The settle pause uses a plain `sleep` rather than the interruptible sleep used between checks. Letting a signal cut it short would leave Tailscale stopped, so shutdown waits the pause out.
+### Shutdown during a restart
+
+Splitting the restart creates a window in which the service has been stopped and not yet started. Exiting there would leave Tailscale down on the router with nothing to bring it back: a watchdog started against a dead Tailscale classifies every peer as `unknown`, and `unknown` breaks the relayed sequence, so it would never restart the service on its own. That includes losing remote access to the router.
+
+POSIX defers a trapped signal until the running foreground command completes and then runs the trap, so this is not a narrow race — any `TERM` delivered from the first stop onwards lands in the window. The single-command `service ... restart` was immune by construction; the split form is not.
+
+So the loop is a critical section. `handle_shutdown` records the request in `SHUTDOWN_PENDING` and returns instead of exiting while `RESTART_CRITICAL` is set; `restart_tailscale_services` exits once every stopped service has had its start attempted and the shell options are restored. The exit happens before the notification block, because the rc wrapper allows only a few seconds before escalating to `SIGKILL` and spending them on a `curl` call would risk being killed anyway.
+
+The settle pause uses a plain `sleep` rather than the interruptible `watchdog_sleep`. That is not what protects the start — the critical section is. `watchdog_sleep` exists so the main loop's inter-check wait can be cut short, which needs `SLEEP_PID` bookkeeping that only makes sense outside a restart.
+
+`RESTART_SETTLE_SECONDS` is capped at 4 for a related reason. The rc wrapper sends `TERM` and escalates to `SIGKILL` after 5 seconds, and `SIGKILL` cannot be deferred. If it landed while the settle was still sleeping, the service would be stopped and never started. Keeping the settle inside the escalation window means the start has always been spawned by then — and the wrapper signals only the daemon's own pid, so an in-flight start completes regardless. Raising the cap requires raising the wrapper's escalation window in step.
 
 ## Decision Flow
 

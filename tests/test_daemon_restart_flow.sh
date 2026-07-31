@@ -121,9 +121,10 @@ assert_eq "restart flow stops, settles, then starts" \
   "$service_log"
 assert_not_contains "restart flow does not use the restart verb" \
   "$service_log" "pfsense_tailscaled restart"
-assert_not_contains "restart flow does not bounce tailscaled separately" \
-  "$service_log" "tailscaled stop
-tailscaled start"
+# No separate assertion that tailscaled is not bounced on its own: any needle
+# built from "tailscaled ..." also matches inside "pfsense_tailscaled ...", so
+# such a check would pass vacuously.  The exact-match assertion above already
+# proves the log holds nothing but the three expected lines.
 assert_not_contains "service was not called before cooldown write" \
   "$service_log" "missing cooldown before service"
 logger_log="$(cat "$LOGGER_LOG" 2>/dev/null)"

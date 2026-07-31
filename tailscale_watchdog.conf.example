@@ -107,6 +107,10 @@ RESTART_SERVICES="pfsense_tailscaled"
 # and starts as separate steps rather than issuing "service ... restart", which
 # matches what the pfSense GUI does.  The pause gives tailscale0 time to go away
 # before the start hook waits for it to come back.  Set to 0 for no pause.
+#
+# Must be 0-4.  The rc.d wrapper escalates from TERM to SIGKILL 5 seconds after
+# a stop request, and SIGKILL cannot be deferred; a longer pause could be killed
+# mid-sleep with Tailscale stopped and never restarted.
 RESTART_SETTLE_SECONDS=3
 
 # ---- Notification behavior --------------------------------------------------
