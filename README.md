@@ -114,7 +114,7 @@ RESTART_DEFERRAL_MAX_ATTEMPTS=10
 # Services restarted when the threshold is reached.
 RESTART_SERVICES="pfsense_tailscaled"
 
-# Seconds between stopping and starting each service.
+# Seconds between stopping and starting each service. Range 0-4.
 RESTART_SETTLE_SECONDS=3
 
 # Maximum seconds curl may spend attempting a Pushover notification.

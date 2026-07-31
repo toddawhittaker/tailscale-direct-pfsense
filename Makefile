@@ -6,6 +6,7 @@ TESTS = \
 	tests/test_cooldown.sh \
 	tests/test_daemon_restart_flow.sh \
 	tests/test_restart_deferral.sh \
+	tests/test_restart_signal_safety.sh \
 	tests/test_docs_static.sh \
 	tests/test_notify.sh \
 	tests/test_peer_state.sh \
