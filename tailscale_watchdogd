@@ -1216,6 +1216,8 @@ run_service_command() {
     service "$1" "$2" >/dev/null 2>&1
     SVC_RC=$?
     SVC_OUTPUT="(output unavailable: could not create temp file)"
+    log_msg "Could not create a temp file for ${1} ${2} output; diagnostics for this command are unavailable"
+    unset _rsc_log
     return 0
   fi
 
@@ -1348,10 +1350,12 @@ restart_tailscale_services() {
       # critical section is what keeps a signal from stripping the start, so the
       # sleep does not need to be interruptible.
       #
-      # Skipped once a shutdown is pending, so that only this service's start
-      # remains between here and the exit.  Combined with the break above, the
-      # most the SIGKILL deadline ever has to cover after the signal is one
-      # start.
+      # Skipped once a shutdown is pending.  Combined with the break above, the
+      # most the SIGKILL deadline has to cover after the signal is one settle
+      # plus one start -- the settle only when the signal lands inside a pause
+      # already sleeping, which the guard below cannot prevent.  The cap is
+      # sized so that pause plus a start still fits the wrapper's window; do
+      # not read this as "the start gets the whole budget".
       #
       # It costs settling time on exactly the restart that cannot be retried,
       # which is a real loss and not a marginal one: with the single-service
@@ -1642,10 +1646,16 @@ main() {
   # every signal for the life of the daemon, leaving SIGKILL as the only way to
   # stop it; a non-numeric SHUTDOWN_PENDING would make the settle guard error
   # instead of compare.  RESTART_SETTLE_SECONDS_MAX is derived from the rc
-  # wrapper's escalation window rather than chosen, so it is not a knob either.
+  # wrapper's escalation window rather than chosen, so it is not a knob either,
+  # and SERVICE_OUTPUT_TEMPLATE decides where a root daemon creates files.
+  #
+  # The defaults at the top of the file remain the single source of the values;
+  # these lines must be kept in step with them.  tests/test_config_validation.sh
+  # asserts each one is present here as a whole line.
   RESTART_CRITICAL=0
   SHUTDOWN_PENDING=0
   RESTART_SETTLE_SECONDS_MAX=4
+  SERVICE_OUTPUT_TEMPLATE="/tmp/tailscale_watchdog.service.XXXXXX"
 
   # ---- Option parsing ------------------------------------------------------
   OPTIND=1

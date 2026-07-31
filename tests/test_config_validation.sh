@@ -199,24 +199,32 @@ expect_invalid_config "restart settle seconds above the cap fails" \
   'RESTART_SETTLE_SECONDS=60' \
   "RESTART_SETTLE_SECONDS must be <= 4"
 
-# The bound lives in the namespace the live config is sourced into.  A
-# RESTART_SETTLE_SECONDS_MAX, RESTART_CRITICAL, and SHUTDOWN_PENDING are
-# internal state rather than settings, but the live config is sourced into the
-# same namespace, so main re-asserts them immediately after load_config_file.
-# Without that, a config could raise the cap, or -- by assigning a non-numeric
-# value -- make the comparison error out and silently skip the check entirely.
-# RESTART_CRITICAL=1 from a config would be worse still: handle_shutdown would
-# defer every signal for the life of the daemon.
+# RESTART_SETTLE_SECONDS_MAX, RESTART_CRITICAL, SHUTDOWN_PENDING, and
+# SERVICE_OUTPUT_TEMPLATE are internal state rather than settings, but the live
+# config is sourced into the same namespace, so main re-asserts them immediately
+# after load_config_file.  Without that, a config could raise the cap, or -- by
+# assigning a non-numeric value -- make the comparison error out and silently
+# skip the check entirely.  RESTART_CRITICAL=1 from a config would be worse
+# still: handle_shutdown would defer every signal for the life of the daemon.
 #
 # Asserted statically because run_validate calls validate_config directly and
 # never goes through main, so it cannot exercise the re-assert itself.
-daemon_text="$(cat "${REPO_ROOT}/tailscale_watchdogd")"
-assert_contains "main re-asserts internal restart state after loading the config" \
-  "$daemon_text" '  load_config_file "$CONFIG_FILE"'
-for internal in RESTART_CRITICAL=0 SHUTDOWN_PENDING=0 RESTART_SETTLE_SECONDS_MAX=4; do
-  assert_contains "main re-asserts ${internal} after loading the config" \
-    "$(printf '%s' "$daemon_text" | sed -n '/^  load_config_file "\$CONFIG_FILE"$/,/^  # ---- Option parsing/p')" \
-    "  ${internal}"
+#
+# Matched with an anchored, whole-line grep rather than assert_contains.  An
+# unanchored substring match is satisfied by any prose that happens to mention
+# the name -- this file writes two spaces after a period, so a sentence such as
+# "the cap.  RESTART_SETTLE_SECONDS_MAX=4 came from the wrapper" passed while
+# the code itself was gone.  Requiring exactly one whole line makes replacement
+# by a comment fail, not just deletion.
+reassert_block="$(sed -n '/^  load_config_file "\$CONFIG_FILE"$/,/^  # ---- Option parsing/p' \
+  "${REPO_ROOT}/tailscale_watchdogd")"
+assert_contains "the re-assert block follows load_config_file" \
+  "$reassert_block" 'load_config_file "$CONFIG_FILE"'
+for internal in RESTART_CRITICAL=0 SHUTDOWN_PENDING=0 RESTART_SETTLE_SECONDS_MAX=4 \
+  'SERVICE_OUTPUT_TEMPLATE="/tmp/tailscale_watchdog.service.XXXXXX"'; do
+  assert_eq "main re-asserts ${internal} after loading the config" \
+    "1" \
+    "$(printf '%s\n' "$reassert_block" | grep -c "^  ${internal}\$")"
 done
 
 expect_invalid_service "restart service semicolon fails" 'RESTART_SERVICES="tailscaled bad;svc"'

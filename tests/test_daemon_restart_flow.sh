@@ -55,6 +55,11 @@ if [ "${REQUIRE_COOLDOWN_BEFORE_SERVICE:-0}" -eq 1 ] && [ ! -f "$NEXT_RESTART_FI
   exit 2
 fi
 printf '%s %s\n' "$1" "$2" >> "$SERVICE_LOG"
+# Emitted on stdout and stderr so the tests can prove run_service_command
+# actually captures service output.  Without this the capture could be replaced
+# by >/dev/null and every test would still pass.
+printf 'MARKER-STDOUT-%s\n' "$2"
+printf 'MARKER-STDERR-%s\n' "$2" >&2
 # SERVICE_STOP_FAIL exercises the pfSense case where the stop reports failure
 # because the daemon is already down; only the start decides the outcome.
 if [ "${SERVICE_STOP_FAIL:-0}" -eq 1 ] && [ "$2" = "stop" ]; then
@@ -152,6 +157,16 @@ assert_eq "failed restart preserves router2 counter" \
   "3" "$(get_peer_attr count router2 unset)"
 assert_contains "failed restart logs selected cooldown" \
   "$(cat "$LOGGER_LOG" 2>/dev/null)" "Restart cooldown selected: cooldown=900s"
+# run_service_command captures service output through a temp file rather than a
+# command substitution, so that a SIGKILL of the daemon mid-start cannot close a
+# pipe and kill the orphaned service with SIGPIPE.  These assert the capture
+# still works: without them the redirect could be replaced by >/dev/null and the
+# whole suite would stay green, silently losing every service diagnostic.
+failed_logger_log="$(cat "$LOGGER_LOG" 2>/dev/null)"
+assert_contains "failed restart logs the service stdout it captured" \
+  "$failed_logger_log" "MARKER-STDOUT-start"
+assert_contains "failed restart logs the service stderr it captured" \
+  "$failed_logger_log" "MARKER-STDERR-start"
 
 # A failing stop must not fail the restart.  The pfSense GUI skips the stop
 # entirely when the service is not running, and pfsense_tailscaled's stop
@@ -173,6 +188,10 @@ assert_eq "failing stop still resets counters" \
   "0" "$(get_peer_attr count router1 unset)"
 assert_contains "failing stop still runs the start" \
   "$(cat "$SERVICE_LOG" 2>/dev/null)" "pfsense_tailscaled start"
+# The failing stop is logged through logger, not debug_msg, so its captured
+# output has to reach syslog too.
+assert_contains "failing stop logs the service output it captured" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "MARKER-STDOUT-stop"
 
 # A zero settle skips the pause entirely rather than calling sleep 0.
 SERVICE_STOP_FAIL=0
