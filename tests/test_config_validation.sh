@@ -199,6 +199,13 @@ expect_invalid_config "restart settle seconds above the cap fails" \
   'RESTART_SETTLE_SECONDS=60' \
   "RESTART_SETTLE_SECONDS must be <= 4"
 
+# The bound lives in the namespace the live config is sourced into.  A
+# non-numeric value would make the comparison error out and take the else
+# branch, silently disabling the cap, so the bound is validated first.
+expect_invalid_config "non-numeric restart settle cap fails rather than disabling the cap" \
+  'RESTART_SETTLE_SECONDS_MAX=abc; RESTART_SETTLE_SECONDS=600' \
+  "RESTART_SETTLE_SECONDS_MAX must be a positive integer"
+
 expect_invalid_service "restart service semicolon fails" 'RESTART_SERVICES="tailscaled bad;svc"'
 expect_invalid_service "restart service command-substitution-shaped value fails" "RESTART_SERVICES='tailscaled \$(id)'"
 expect_invalid_service "restart service path traversal fails" 'RESTART_SERVICES="tailscaled ../service"'
