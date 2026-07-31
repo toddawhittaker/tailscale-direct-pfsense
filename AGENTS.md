@@ -4,6 +4,8 @@
 
 `tailscale-direct-pfsense` is a small pfSense/FreeBSD watchdog for Tailscale direct connectivity.
 
+The target platform is pfSense CE 2.7, which is based on FreeBSD 14; CI pins its FreeBSD VM to 14.0 to match. Other versions may work, but the scripts rely on FreeBSD userland behavior such as `stat -f`, `jot`, and `netstat -ibn`, which can differ on an older base. `README.md` Requirements and `docs/architecture.md` state the same target — when the supported base moves, move all three and the CI pin together.
+
 Primary repo files: `tailscale_watchdogd`, `tailscale_watchdog` rc.d wrapper, `tailscale_watchdog.conf.example`, `install.sh`, `uninstall.sh`, `README.md`, `docs/`, `LICENSE`.
 
 This file is the single rulebook for every coding agent working here. `CLAUDE.md` is a symlink to it, so Claude Code and Codex read the same content; keep it a symlink rather than materializing a second file that can drift. Claude Code subagent definitions live in `.claude/agents/` and are the one Claude-specific exception.
@@ -16,7 +18,7 @@ This file is the single rulebook for every coding agent working here. `CLAUDE.md
 ## Non-Negotiables
 
 * Keep the project shell-only, small, auditable, and pfSense/FreeBSD-oriented.
-* Target `/bin/sh`, FreeBSD userland, and rc.d; do not assume Bash, GNU coreutils, systemd, Linux service paths, package managers, compiled code, Python, Node, Go, containers, or GUI integration.
+* Target `/bin/sh`, FreeBSD 14 userland, and rc.d; do not assume Bash, GNU coreutils, systemd, Linux service paths, package managers, compiled code, Python, Node, Go, containers, or GUI integration.
 * Runtime dependencies must stay limited to expected pfSense/FreeBSD tools plus Tailscale.
 * Do not introduce Bashisms: arrays, `[[ ... ]]`, process substitution, `${var//...}`, or `function name { ... }`.
 * Do not introduce GNU-specific options unless verified on FreeBSD/pfSense.
