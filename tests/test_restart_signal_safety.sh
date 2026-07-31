@@ -10,6 +10,10 @@
 # and then runs the trap, so this is not a narrow race: any TERM delivered from
 # the first stop onwards lands in the window.  The fake service below sends the
 # signal itself, which makes the timing exact rather than probabilistic.
+#
+# The fakes must fail loudly.  A fake that swallows an error stops testing its
+# property without reporting anything, which is how earlier versions of this
+# file passed while asserting nothing.
 
 set -u
 
@@ -77,7 +81,9 @@ printf 'sleep-begin %s\n' "$1" >> "$SERVICE_LOG"
 if [ -n "${SIGNAL_ON_SLEEP:-}" ] && [ -n "${SIGNAL_TARGET_PID:-}" ]; then
   kill -TERM "$SIGNAL_TARGET_PID"
 fi
-/bin/sleep "$1"
+# Loudly, not silently: if /bin/sleep were missing the pause would vanish and
+# every assertion below would still pass against a daemon that skipped it.
+/bin/sleep "$1" || exit 1
 printf 'sleep-end %s\n' "$1" >> "$SERVICE_LOG"
 exit 0
 EOF
@@ -152,7 +158,7 @@ service_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
 
 assert_contains "TERM between stop and start still runs the start" \
   "$service_log" "pfsense_tailscaled start"
-# The trap runs as soon as the stop's command substitution returns, which is
+# The trap runs as soon as the foreground stop command completes, which is
 # before the settle check, so this settle is dropped rather than taken.
 assert_eq "TERM during the stop skips the settle and still starts" \
   "$(printf 'pfsense_tailscaled stop\npfsense_tailscaled start')" \
@@ -209,7 +215,7 @@ multi_rc=$?
 
 multi_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
 
-# The trap runs as soon as the first stop's command substitution returns, which
+# The trap runs as soon as the first foreground stop command completes, which
 # is before the settle check -- so that settle is dropped, not taken.  The
 # service already stopped is started, and the loop then breaks rather than
 # stopping a service that is still safely running.
