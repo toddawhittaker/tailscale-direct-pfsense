@@ -116,8 +116,13 @@ CURL_TIMEOUT=10
 #
 # This is deliberately one function covering the whole block rather than an
 # enumerated subset re-asserted in main.  An earlier version listed four names
-# there and missed SLEEP_PID, which is the one that reaches a kill.  Add new
-# internal state here and it is covered by construction.
+# there and missed SLEEP_PID, which is the one that reaches a kill.
+#
+# Nothing enforces that a new internal is added here rather than left at top
+# level; static checks for it were tried and were all bypassable.  Treat the
+# rule in AGENTS.md as the control, and put new internal state in this function.
+# Values that are genuinely operator settings belong in the defaults block
+# above and in tailscale_watchdog.conf.example.
 #
 # CLI options are parsed after main's call, so -t, -1, and -d still win.
 reset_runtime_state() {
