@@ -83,14 +83,6 @@ RESTART_DEFERRAL_INTERFACE="tailscale0"
 RESTART_DEFERRAL_CHECK_SECONDS=30
 RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
-STATE_DIR="/var/run/tailscale_watchdog"
-# The state file stores the epoch timestamp at which the next restart attempt
-# is allowed.  It is written after every restart attempt (success or failure)
-# with a randomly chosen value between now+MIN and now+MAX.  Storing the
-# next-allowed time rather than the last-attempt time means cooldown_remaining
-# does not need to recompute elapsed time or remember which random cooldown
-# was chosen.
-NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 CURL_TIMEOUT=10
 
 # ---- Runtime state ---------------------------------------------------------
@@ -153,6 +145,29 @@ reset_runtime_state() {
 
   # Where a root daemon creates files; see run_service_command.
   SERVICE_OUTPUT_TEMPLATE="/tmp/tailscale_watchdog.service.XXXXXX"
+
+  # Runtime state paths.  Fixed, not settings: AGENTS.md pins the state
+  # directory and the cooldown file, and uninstall.sh hardcodes the same
+  # directory to remove them, so a relocated state directory would survive
+  # uninstall.  Relocating state also decides whether cooldown survives a
+  # reboot, which is a behavior choice rather than something to fall out of a
+  # stray config line.
+  #
+  # Derived together on purpose.  These used to sit in the defaults block with
+  # NEXT_RESTART_FILE expanded once from STATE_DIR, so a config assigning only
+  # STATE_DIR moved the directory and not the file.  mark_restart_attempt then
+  # created and mktemp'd under the new directory and mv'd into the old one,
+  # which no longer existed; the write failed, and restart_tailscale_services
+  # returned before touching any service.  The watchdog stopped restarting
+  # anything, silently, for the life of the install.
+  STATE_DIR="/var/run/tailscale_watchdog"
+
+  # Stores the epoch at which the next restart attempt is allowed.  Written
+  # after every restart attempt, success or failure, with a randomly chosen
+  # value between now+MIN and now+MAX.  Storing the next-allowed time rather
+  # than the last-attempt time means cooldown_remaining does not need to
+  # recompute elapsed time or remember which random cooldown was chosen.
+  NEXT_RESTART_FILE="${STATE_DIR}/next_restart_allowed"
 }
 reset_runtime_state
 
@@ -1266,6 +1281,22 @@ run_service_command() {
   unset _rsc_log
 }
 
+# warn_ignored_state_paths CONFIG_STATE_DIR CONFIG_NEXT_RESTART_FILE
+#
+# Logs when the live config assigned a state path that reset_runtime_state has
+# just discarded.  Both are fixed rather than settings -- see the comments in
+# reset_runtime_state -- but a config assigning one used to split the pair and
+# suppress every restart, so an operator who tried it deserves to see why it
+# had no effect instead of finding a watchdog that quietly stopped restarting.
+warn_ignored_state_paths() {
+  if [ -n "$1" ] && [ "$1" != "$STATE_DIR" ]; then
+    log_msg "Ignoring STATE_DIR from the config (${1}). The runtime state directory is fixed at ${STATE_DIR}; the uninstaller removes only that path. See ${DOCS_URL}"
+  fi
+  if [ -n "$2" ] && [ "$2" != "$NEXT_RESTART_FILE" ]; then
+    log_msg "Ignoring NEXT_RESTART_FILE from the config (${2}). The cooldown state file is fixed at ${NEXT_RESTART_FILE}. See ${DOCS_URL}"
+  fi
+}
+
 # warn_redundant_restart_services
 #
 # Logs a startup warning when RESTART_SERVICES lists tailscaled alongside
@@ -1678,6 +1709,13 @@ main() {
 
   # Discard anything the live config assigned to internal runtime state.  See
   # reset_runtime_state for why, and for what each of those values reaches.
+  #
+  # The state paths are captured first so the reset can be reported.  Silently
+  # ignoring a config line leaves an operator watching a setting do nothing
+  # with no way to tell that it was rejected rather than broken.
+  _cfg_state_dir="${STATE_DIR:-}"
+  _cfg_next_restart_file="${NEXT_RESTART_FILE:-}"
+
   reset_runtime_state
 
   # ---- Option parsing ------------------------------------------------------
@@ -1738,6 +1776,10 @@ main() {
   trap handle_shutdown INT TERM
 
   log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown=(min=${RESTART_COOLDOWN_MIN}s,max=${RESTART_COOLDOWN_MAX}s) restart_services=\"${RESTART_SERVICES}\" restart_settle=${RESTART_SETTLE_SECONDS}s restart_deferral_enabled=${RESTART_DEFERRAL_ENABLED} restart_deferral_interface=${RESTART_DEFERRAL_INTERFACE} test=${TEST} docs=${DOCS_URL}"
+  # Reported here rather than beside the reset above so that -d reaches it:
+  # DEBUG is still 0 before option parsing, so log_msg would go to syslog only.
+  warn_ignored_state_paths "$_cfg_state_dir" "$_cfg_next_restart_file"
+  unset _cfg_state_dir _cfg_next_restart_file
   warn_redundant_restart_services
   notify_startup_if_enabled
 

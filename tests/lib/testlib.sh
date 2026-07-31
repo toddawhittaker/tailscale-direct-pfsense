@@ -103,6 +103,19 @@ cleanup_temp_dirs() {
 
 finish_tests() {
   cleanup_temp_dirs
+
+  # A file that ran no assertions did not pass; it died before it could fail.
+  # This trap fires on EXIT, so it overrides the script's own status -- an
+  # `|| exit 1` on a missing fixture, or a `set -u` abort while sourcing the
+  # daemon, previously printed "0 tests, 0 failures" and exited 0, and the
+  # Makefile counted the file as passed.  That hid a real regression: breaking
+  # the order of the state-path assignments in reset_runtime_state aborts this
+  # suite's sourcing, and the file reported success.
+  if [ "$TESTS_RUN" -eq 0 ]; then
+    printf '# 0 tests ran; the file exited before asserting anything\n' >&2
+    exit 1
+  fi
+
   if [ "$TESTS_FAILED" -eq 0 ]; then
     printf '# %s tests, 0 failures\n' "$TESTS_RUN"
     exit 0
