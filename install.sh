@@ -8,13 +8,13 @@
 #   https://github.com/toddawhittaker/tailscale-direct-pfsense
 #
 # Usage (as root):
-#   VERSION=v1.1.0
+#   VERSION=v1.2.0
 #   curl -fsSL \
 #     "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
 #     | VERSION="${VERSION}" /bin/sh
 #
 # Or, to review before running (recommended):
-#   VERSION=v1.1.0
+#   VERSION=v1.2.0
 #   curl -fsSL \
 #     "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
 #     -o /tmp/install.sh
@@ -88,11 +88,11 @@ set -e
 #
 # VERSION is the git ref used to construct download URLs.  This defaults to
 # "main" for development convenience.  For production use, pin this to a
-# specific release tag (e.g. "v1.1.0") or a full 40-character commit SHA so
+# specific release tag (e.g. "v1.2.0") or a full 40-character commit SHA so
 # that the installed files cannot change without the installer changing first.
 #
 # To install a specific version:
-#   curl -fsSL .../install.sh | VERSION=v1.1.0 /bin/sh
+#   curl -fsSL .../install.sh | VERSION=v1.2.0 /bin/sh
 REPO_OWNER="toddawhittaker"
 REPO_NAME="tailscale-direct-pfsense"
 VERSION="${VERSION:-main}"

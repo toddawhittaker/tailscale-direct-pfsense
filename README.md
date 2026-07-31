@@ -39,7 +39,7 @@ Review-first installation is recommended because the installer runs as root.
 The quickest installation method is:
 
 ```sh
-VERSION=v1.1.0
+VERSION=v1.2.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
   | VERSION="${VERSION}" /bin/sh
@@ -48,7 +48,7 @@ curl -fsSL \
 For a review-first installation:
 
 ```sh
-VERSION=v1.1.0
+VERSION=v1.2.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
   -o /tmp/install.sh
@@ -300,7 +300,7 @@ Then test, enable, and start the service as described above.
 Re-run the installer:
 
 ```sh
-VERSION=v1.1.0
+VERSION=v1.2.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
   | VERSION="${VERSION}" /bin/sh
@@ -345,7 +345,7 @@ RESTART_SETTLE_SECONDS=3
 To uninstall quickly:
 
 ```sh
-VERSION=v1.1.0
+VERSION=v1.2.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/uninstall.sh" \
   | /bin/sh
@@ -354,7 +354,7 @@ curl -fsSL \
 For a review-first uninstall:
 
 ```sh
-VERSION=v1.1.0
+VERSION=v1.2.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/uninstall.sh" \
   -o /tmp/uninstall.sh
