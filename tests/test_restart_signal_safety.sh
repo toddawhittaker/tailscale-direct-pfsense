@@ -64,12 +64,21 @@ EOF
 # SIGNAL_ON_SLEEP delivers the TERM during the settle instead of during the
 # stop, which is the case where a settle is already sleeping and must run to
 # completion rather than being skipped.
+#
+# This fake really does sleep, and brackets the pause with begin/end markers.
+# An earlier version logged one line and returned immediately, which made the
+# assertion for that case unfalsifiable: the marker appeared whether the pause
+# completed or was abandoned.  The real pause plus the end marker is what makes
+# "a settle already sleeping runs to completion" a testable claim -- and that
+# claim is what the cap in validate_config is sized against.
 cat > "${fakebin}/sleep" <<'EOF'
 #!/bin/sh
-printf 'sleep %s\n' "$1" >> "$SERVICE_LOG"
+printf 'sleep-begin %s\n' "$1" >> "$SERVICE_LOG"
 if [ -n "${SIGNAL_ON_SLEEP:-}" ] && [ -n "${SIGNAL_TARGET_PID:-}" ]; then
   kill -TERM "$SIGNAL_TARGET_PID"
 fi
+/bin/sleep "$1"
+printf 'sleep-end %s\n' "$1" >> "$SERVICE_LOG"
 exit 0
 EOF
 
@@ -102,7 +111,7 @@ NEXT_RESTART_FILE="${TEST_STATE_DIR}/next_restart_allowed"
 
 PEERS="router1"
 RESTART_SERVICES="${TEST_RESTART_SERVICES:-pfsense_tailscaled}"
-RESTART_SETTLE_SECONDS=3
+RESTART_SETTLE_SECONDS=1
 RESTART_COOLDOWN_MIN=900
 RESTART_COOLDOWN_MAX=900
 PUSHOVER_TOKEN=""
@@ -171,8 +180,9 @@ sh "${tmpdir}/run_restart.sh"
 plain_rc=$?
 
 assert_eq "restart without a signal returns normally" "0" "$plain_rc"
-assert_contains "restart without a signal does not exit early" \
-  "$(cat "$SERVICE_LOG" 2>/dev/null)" "returned normally"
+assert_eq "restart without a signal takes the full settle" \
+  "$(printf 'pfsense_tailscaled stop\nsleep-begin 1\nsleep-end 1\npfsense_tailscaled start\nreturned normally')" \
+  "$(cat "$SERVICE_LOG" 2>/dev/null)"
 assert_not_contains "restart without a signal logs no shutdown" \
   "$(cat "$LOGGER_LOG" 2>/dev/null)" "Daemon stopping"
 
@@ -181,9 +191,9 @@ assert_not_contains "restart without a signal logs no shutdown" \
 # This is the shape a preserved live config has, and it is where the deadline
 # actually bites: the critical section spans the whole list, but the rc
 # wrapper's SIGKILL budget is a single window measured from the TERM.  Once a
-# shutdown is pending the remaining settles are skipped, so only the stops and
-# starts stay on that path -- and, crucially, the second service is started
-# rather than left stopped.
+# shutdown is pending the loop starts what it already stopped and then breaks,
+# leaving untouched services running -- they are safe as they are, and stopping
+# one would open a fresh window on a budget already partly spent.
 
 TEST_STATE_DIR="${tmpdir}/state-multi"
 NEXT_RESTART_FILE="${TEST_STATE_DIR}/next_restart_allowed"
@@ -199,16 +209,17 @@ multi_rc=$?
 
 multi_log="$(cat "$SERVICE_LOG" 2>/dev/null)"
 
-# The TERM lands on the first stop.  That first settle is still taken -- the
-# trap cannot run until the stop's command substitution returns -- and every
-# later settle is dropped.
-assert_eq "multi-service shutdown starts every stopped service" \
-  "$(printf 'tailscaled stop\ntailscaled start\npfsense_tailscaled stop\npfsense_tailscaled start')" \
+# The trap runs as soon as the first stop's command substitution returns, which
+# is before the settle check -- so that settle is dropped, not taken.  The
+# service already stopped is started, and the loop then breaks rather than
+# stopping a service that is still safely running.
+assert_eq "multi-service shutdown starts what it stopped and stops no more" \
+  "$(printf 'tailscaled stop\ntailscaled start')" \
   "$multi_log"
-assert_not_contains "multi-service shutdown drops the remaining settles" \
-  "$multi_log" "sleep 3"
-assert_contains "multi-service shutdown starts the second service" \
-  "$multi_log" "pfsense_tailscaled start"
+assert_not_contains "multi-service shutdown does not stop the untouched service" \
+  "$multi_log" "pfsense_tailscaled stop"
+assert_contains "leaving the untouched service alone is logged" \
+  "$(cat "$LOGGER_LOG" 2>/dev/null)" "leaving pfsense_tailscaled running"
 assert_eq "multi-service deferred shutdown exits zero" "0" "$multi_rc"
 assert_not_contains "multi-service shutdown does not return normally" \
   "$multi_log" "returned normally"
@@ -223,8 +234,8 @@ export TEST_STATE_DIR NEXT_RESTART_FILE SERVICE_LOG LOGGER_LOG SIGNAL_SELF
 
 sh "${tmpdir}/run_restart.sh"
 
-assert_eq "multi-service without a signal keeps every settle" \
-  "$(printf 'tailscaled stop\nsleep 3\ntailscaled start\npfsense_tailscaled stop\nsleep 3\npfsense_tailscaled start\nreturned normally')" \
+assert_eq "multi-service without a signal restarts every service with its settle" \
+  "$(printf 'tailscaled stop\nsleep-begin 1\nsleep-end 1\ntailscaled start\npfsense_tailscaled stop\nsleep-begin 1\nsleep-end 1\npfsense_tailscaled start\nreturned normally')" \
   "$(cat "$SERVICE_LOG" 2>/dev/null)"
 
 # TERM delivered during the settle itself: that sleep is already running, so it
@@ -242,8 +253,11 @@ export TEST_STATE_DIR NEXT_RESTART_FILE SERVICE_LOG LOGGER_LOG SIGNAL_SELF \
 sh "${tmpdir}/run_restart.sh"
 sleep_signal_rc=$?
 
-assert_eq "TERM during a settle completes it and drops only later ones" \
-  "$(printf 'tailscaled stop\nsleep 3\ntailscaled start\npfsense_tailscaled stop\npfsense_tailscaled start')" \
+# sleep-end is the point: the pause ran to completion despite the TERM landing
+# in the middle of it.  Without that marker this assertion could not tell a
+# completed pause from an abandoned one.
+assert_eq "TERM during a settle completes that settle, then stops no more services" \
+  "$(printf 'tailscaled stop\nsleep-begin 1\nsleep-end 1\ntailscaled start')" \
   "$(cat "$SERVICE_LOG" 2>/dev/null)"
 assert_eq "TERM during a settle still exits zero" "0" "$sleep_signal_rc"
 
@@ -266,8 +280,10 @@ RESTART_CRITICAL=0
 SHUTDOWN_PENDING=0
 SLEEP_PID=""
 
-( handle_shutdown )
-assert_eq "handle_shutdown outside a restart exits" "0" "$?"
+# `exit 9` is only reached if handle_shutdown returned instead of exiting, so
+# this distinguishes the two.  A bare `( handle_shutdown )` would pass either way.
+( handle_shutdown; exit 9 )
+assert_eq "handle_shutdown outside a restart exits rather than returning" "0" "$?"
 assert_contains "handle_shutdown outside a restart logs stopping" \
   "$(cat "$LOGGER_LOG" 2>/dev/null)" "Daemon stopping"
 assert_not_contains "handle_shutdown outside a restart does not defer" \
