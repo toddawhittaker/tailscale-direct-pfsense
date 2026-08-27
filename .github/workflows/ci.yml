@@ -82,7 +82,7 @@ jobs:
       #
       # usesh runs the block under /bin/sh rather than the VM's default shell.
       - name: Run suite in a FreeBSD VM
-        uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1
+        uses: vmactions/freebsd-vm@d0518f912576ae759075aa00fb9fe27037940271 # v1
         with:
           release: "14.0"
           usesh: true
