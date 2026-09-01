@@ -80,12 +80,19 @@ jobs:
       # testing against a newer 14.x than the router actually runs would
       # weaken the signal.  Bump this when the supported pfSense base moves.
       #
-      # usesh runs the block under /bin/sh rather than the VM's default shell.
+      # Keep the release fully qualified.  The action reads a partial value
+      # such as "14" as a prefix and boots the newest release matching it,
+      # which would drift the VM off the router's base without failing.
+      #
+      # What makes the suite run under the VM's /bin/sh is the Makefile, which
+      # invokes each test as `sh <script>`, not anything set here.  The usesh
+      # input chose the shell for this block only, and v1.5.4 deprecated and
+      # ignores it, so passing it is dropped rather than left reading like it
+      # still decides something.
       - name: Run suite in a FreeBSD VM
         uses: vmactions/freebsd-vm@d0518f912576ae759075aa00fb9fe27037940271 # v1
         with:
           release: "14.0"
-          usesh: true
           run: |
             set -e
             make smoke
