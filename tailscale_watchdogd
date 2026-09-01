@@ -530,6 +530,18 @@ curl_config_escape() {
 # write_pushover_curl_config
 #
 # Writes the secret-bearing curl config used for Pushover requests.
+#
+# Two curl constraints shape this function and notify_pushover, and violating
+# either one fails silently because the call redirects stderr to /dev/null:
+#
+#   1. A request may use only one method.  Everything in the request must stay
+#      in the multipart form-string family; adding a --data-urlencode argument
+#      alongside these makes curl exit 2 without contacting Pushover at all.
+#   2. This config stream is parsed a line at a time, so a value written here
+#      cannot contain a newline -- it is truncated at the first one.  That is
+#      why only the single-line secrets live here and the possibly multi-line
+#      title and message are passed as --form-string arguments instead, where
+#      embedded line breaks survive.
 write_pushover_curl_config() {
   printf 'fail\n'
   printf 'show-error\n'
@@ -592,6 +604,9 @@ notify() {
 #
 # Sends a Pushover notification using curl's config stream.  Missing Pushover
 # credentials are treated as disabled notifications for backward compatibility.
+# The title and message are not secret, so passing them in argv is fine; see
+# write_pushover_curl_config for why they cannot go in the config stream and
+# why they must stay --form-string rather than --data-urlencode.
 notify_pushover() {
   title="$1"
   message="$2"
@@ -605,18 +620,25 @@ notify_pushover() {
     return 1
   fi
 
+  # curl's own stderr is discarded because it is not worth risking config
+  # content in the log, but the exit status is not secret and is the whole
+  # diagnosis: 2 means the request was malformed and never sent, 22 means
+  # Pushover rejected it, 28 means it timed out.
   if [ -n "$title" ]; then
-    if ! write_pushover_curl_config | curl -K - \
-      --data-urlencode "title=${title}" \
-      --data-urlencode "message=${message}" \
-      >/dev/null 2>&1; then
-      log_msg "Pushover notification failed"
-      return 1
-    fi
-  elif ! write_pushover_curl_config | curl -K - \
-    --data-urlencode "message=${message}" \
-    >/dev/null 2>&1; then
-    log_msg "Pushover notification failed"
+    write_pushover_curl_config | curl -K - \
+      --form-string "title=${title}" \
+      --form-string "message=${message}" \
+      >/dev/null 2>&1
+    curl_status=$?
+  else
+    write_pushover_curl_config | curl -K - \
+      --form-string "message=${message}" \
+      >/dev/null 2>&1
+    curl_status=$?
+  fi
+
+  if [ "$curl_status" -ne 0 ]; then
+    log_msg "Pushover notification failed (curl exit ${curl_status})"
     return 1
   fi
 
