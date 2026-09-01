@@ -52,7 +52,7 @@ Current tests cover:
 - cooldown state reading and writing;
 - restart flow with fake services;
 - restart deferral with fake interface counters;
-- notification handling with fake `curl`;
+- notification handling with fake `curl`, including rejecting a request that mixes curl's multipart and URL-encoded request methods and rejecting a config-stream value that is silently truncated at a newline;
 - per-peer state transitions;
 - installer, uninstaller, rc wrapper, and docs static safety checks.
 
