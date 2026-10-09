@@ -37,6 +37,8 @@ Restart impact is global to local Tailscale connectivity, even when one peer tri
 
 The rc.d wrapper runs the daemon in the background and writes `/var/run/tailscale_watchdog.pid`. It validates pidfile contents before signaling so corrupt or malicious pidfile data cannot be passed to `kill`.
 
+When `INTERFACE_GROUP_REPAIR_ENABLED=1`, each cycle also runs `ifconfig tailscale0` before the peer checks. If the interface has lost the `Tailscale` interface group, the daemon re-adds it and runs `/etc/rc.filter_configure_sync`. This check is independent of peer classification, restart, cooldown, and deferral; see `docs/daemon-behavior.md`.
+
 Notifications are dispatched through a provider selector. Pushover is the current provider, and restart/startup notification paths call only the generic `notify` entry point. Future providers should be added behind that dispatch boundary so restart behavior, cooldown behavior, and service control do not need to change.
 
 ## pfSense Boot Model

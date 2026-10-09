@@ -159,3 +159,46 @@ assert_contains "installer installs the boot hook" \
 
 assert_contains "uninstaller removes the boot hook" \
   "$uninstall_text" 'remove_file "$HOOK_DST"'
+
+# Interface group repair: the setting must be pinned in the code, the config
+# example, the README, and the maintainer docs.  The anchored forms are the
+# assignment lines and section headings, which prose cannot satisfy.
+daemon_behavior_text="$(cat "${REPO_ROOT}/docs/daemon-behavior.md")"
+
+assert_contains "daemon defaults interface group repair to off" \
+  "$daemon_text" "INTERFACE_GROUP_REPAIR_ENABLED=0
+CURL_TIMEOUT=10"
+
+assert_contains "config example sets interface group repair off" \
+  "$config_example_text" "
+INTERFACE_GROUP_REPAIR_ENABLED=0
+"
+
+assert_contains "README config block sets interface group repair off" \
+  "$readme_text" "
+INTERFACE_GROUP_REPAIR_ENABLED=0
+"
+
+assert_contains "README has an interface group repair section" \
+  "$readme_text" "### Interface group repair"
+
+assert_contains "README has a LAN traffic troubleshooting entry" \
+  "$readme_text" "### LAN traffic over Tailscale fails while the watchdog reports peers direct"
+
+assert_contains "README gives the manual interface group fix" \
+  "$readme_text" "ifconfig tailscale0 group Tailscale"
+
+assert_contains "daemon behavior docs have an interface group repair section" \
+  "$daemon_behavior_text" "## Interface Group Repair"
+
+assert_contains "AGENTS pins the interface group repair invariant" \
+  "$agents_text" "* Interface group repair (\`INTERFACE_GROUP_REPAIR_ENABLED\`) is opt-in and defaults to off"
+
+assert_contains "script reference lists the interface group check" \
+  "$script_reference_text" "loop: check_interface_group"
+
+assert_contains "testing docs list interface group coverage" \
+  "$testing_text" "- interface group check and repair with fake \`ifconfig\`"
+
+assert_not_contains "config example does not document the fixed interface group name as a setting" \
+  "$config_example_text" "IFGROUP_"
