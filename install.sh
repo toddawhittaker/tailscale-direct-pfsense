@@ -24,7 +24,8 @@
 # What this script does:
 #   1. Verifies it is running as root on pfSense.
 #   2. Checks that Tailscale is installed, and warns if it is not currently connected.
-#   3. Downloads the daemon, rc wrapper, and example config from GitHub.
+#   3. Downloads the daemon, rc wrapper, pfSense boot hook, and example config
+#      from GitHub.
 #   4. Validates each downloaded file with sh -n (syntax check).
 #   5. Installs files atomically (temp file + mv) with correct permissions.
 #   6. Does NOT overwrite an existing live config file.
@@ -108,6 +109,13 @@ DAEMON_MODE="0755"
 RC_SRC="tailscale_watchdog"
 RC_DST="/usr/local/etc/rc.d/tailscale_watchdog"
 RC_MODE="0755"
+
+# pfSense boot hook.  pfSense starts only /usr/local/etc/rc.d/*.sh at boot,
+# so the rc wrapper above is never run by pfSense without it.  The hook hands
+# its argument to service(8); see the comment at the top of the hook.
+HOOK_SRC="tailscale_watchdog.sh"
+HOOK_DST="/usr/local/etc/rc.d/tailscale_watchdog.sh"
+HOOK_MODE="0755"
 
 CONF_SRC="tailscale_watchdog.conf.example"
 CONF_DST_EXAMPLE="/usr/local/etc/tailscale_watchdog.conf.example"
@@ -271,8 +279,9 @@ fetch_file() {
 # is needed.  The staged files are in a root-only directory (mode 0700)
 # and have not yet had their final permissions applied.
 #
-# Called for all three downloaded files:
-#   - The daemon and rc wrapper are executed directly as shell scripts.
+# Called for all four downloaded files:
+#   - The daemon, rc wrapper, and boot hook are executed directly as shell
+#     scripts.
 #   - The config example is sourced by the daemon as shell code, so it
 #     must also be syntactically valid shell.
 validate_shell_syntax() {
@@ -468,6 +477,7 @@ download_files() {
 
   fetch_file "${BASE_URL}/${DAEMON_SRC}" "${STAGE_DIR}/${DAEMON_SRC}"
   fetch_file "${BASE_URL}/${RC_SRC}"     "${STAGE_DIR}/${RC_SRC}"
+  fetch_file "${BASE_URL}/${HOOK_SRC}"   "${STAGE_DIR}/${HOOK_SRC}"
   fetch_file "${BASE_URL}/${CONF_SRC}"   "${STAGE_DIR}/${CONF_SRC}"
 }
 
@@ -483,6 +493,7 @@ validate_files() {
 
   validate_shell_syntax "${STAGE_DIR}/${DAEMON_SRC}" "daemon"
   validate_shell_syntax "${STAGE_DIR}/${RC_SRC}"     "rc wrapper"
+  validate_shell_syntax "${STAGE_DIR}/${HOOK_SRC}"   "pfSense boot hook"
   validate_shell_syntax "${STAGE_DIR}/${CONF_SRC}"   "config example (sourced as shell)"
 
   # Confirm we received the right config file and not an HTML error page
@@ -513,6 +524,14 @@ warn_if_service_running() {
     warn "  The running daemon will continue using the old version until"
     warn "  you restart it manually after reviewing the config:"
     warn "    service tailscale_watchdog restart"
+  elif service tailscale_watchdog enabled >/dev/null 2>&1; then
+    # Before the boot hook existed, pfSense never acted on the enable line,
+    # so a router could carry it while the service was deliberately stopped.
+    # The hook makes pfSense honor it, so say so before it happens.
+    warn "tailscale_watchdog is enabled in ${RCCONF_LOCAL} but not running."
+    warn "  pfSense will now start it at the next boot or package restart."
+    warn "  If you do not want that, remove this line from ${RCCONF_LOCAL}:"
+    warn "    tailscale_watchdog_enable=\"YES\""
   else
     ok "tailscale_watchdog is not currently running."
   fi
@@ -522,7 +541,7 @@ warn_if_service_running() {
 
 # install_files
 #
-# Installs daemon, rc wrapper, and example config, then either creates a
+# Installs daemon, rc wrapper, pfSense boot hook, and example config, then either creates a
 # starter live config or preserves the existing one while enforcing safe
 # metadata.  Existing live config contents are never replaced.
 install_files() {
@@ -537,6 +556,13 @@ install_files() {
     "${STAGE_DIR}/${RC_SRC}" \
     "$RC_DST" \
     "$RC_MODE"
+
+  # The hook does not enable the service.  It goes through service(8), which
+  # still requires tailscale_watchdog_enable="YES" before it will start.
+  install_file \
+    "${STAGE_DIR}/${HOOK_SRC}" \
+    "$HOOK_DST" \
+    "$HOOK_MODE"
 
   # Always update the example config so the operator can see new options
   # added in this version.
@@ -627,6 +653,7 @@ print_next_steps() {
 Files installed:
   ${DAEMON_DST}
   ${RC_DST}
+  ${HOOK_DST}  (pfSense boot hook)
   ${CONF_DST_EXAMPLE}  (reference copy, updated to this version)
 
 Documentation:
@@ -685,6 +712,9 @@ Next steps:
      Add or update this line:
 
        tailscale_watchdog_enable="YES"
+
+     On pfSense this line is what lets ${HOOK_DST}
+     start the watchdog at boot.  Without it, the boot hook does nothing.
 
   5. Start the service:
 

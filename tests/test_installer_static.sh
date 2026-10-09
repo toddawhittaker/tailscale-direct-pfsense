@@ -108,3 +108,35 @@ assert_contains "installer checks service status but does not restart it" \
 
 assert_not_contains "installer does not recommend raw live/example diff" \
   "$install_text" 'diff ${CONF_DST_LIVE} ${CONF_DST_EXAMPLE}'
+
+assert_contains "installer names the boot hook source file" \
+  "$install_text" 'HOOK_SRC="tailscale_watchdog.sh"'
+
+assert_contains "installer puts the boot hook in the rc.d directory with a .sh suffix" \
+  "$install_text" 'HOOK_DST="/usr/local/etc/rc.d/tailscale_watchdog.sh"'
+
+assert_contains "installer makes the boot hook executable" \
+  "$install_text" 'HOOK_MODE="0755"'
+
+assert_contains "installer downloads the boot hook" \
+  "$active_text" 'fetch_file "${BASE_URL}/${HOOK_SRC}"   "${STAGE_DIR}/${HOOK_SRC}"'
+
+assert_contains "installer syntax-checks the boot hook" \
+  "$active_text" 'validate_shell_syntax "${STAGE_DIR}/${HOOK_SRC}"   "pfSense boot hook"'
+
+hook_install_call="$(printf '%s\n' "$active_text" | awk '
+  /^[[:space:]]*install_file[[:space:]]*\\$/ { call = $0; collecting = 1; next }
+  collecting { call = call "|" $0; if ($0 !~ /\\$/) { print call; collecting = 0 } }
+' | grep 'HOOK_SRC')"
+
+assert_eq "installer installs the staged boot hook to HOOK_DST with HOOK_MODE" \
+  '  install_file \|    "${STAGE_DIR}/${HOOK_SRC}" \|    "$HOOK_DST" \|    "$HOOK_MODE"' \
+  "$hook_install_call"
+
+# An upgrade onto a router that is enabled but deliberately stopped changes
+# behavior: the boot hook makes pfSense honor the enable line it used to
+# ignore.  The installer must say so rather than let it happen silently.
+assert_contains "installer checks for enabled-but-stopped service" \
+  "$active_text" 'elif service tailscale_watchdog enabled >/dev/null 2>&1; then'
+assert_contains "installer warns that pfSense will now start an enabled service" \
+  "$active_text" 'warn "  pfSense will now start it at the next boot or package restart."'

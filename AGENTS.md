@@ -6,12 +6,13 @@
 
 The target platform is pfSense CE 2.7, which is based on FreeBSD 14; CI pins its FreeBSD VM to 14.0 to match. Other versions may work, but the scripts rely on FreeBSD userland behavior such as `stat -f`, `jot`, and `netstat -ibn`, which can differ on an older base. `README.md` Requirements and `docs/architecture.md` state the same target — when the supported base moves, move all three and the CI pin together.
 
-Primary repo files: `tailscale_watchdogd`, `tailscale_watchdog` rc.d wrapper, `tailscale_watchdog.conf.example`, `install.sh`, `uninstall.sh`, `README.md`, `docs/`, `LICENSE`.
+Primary repo files: `tailscale_watchdogd`, `tailscale_watchdog` rc.d wrapper, `tailscale_watchdog.sh` pfSense boot hook, `tailscale_watchdog.conf.example`, `install.sh`, `uninstall.sh`, `README.md`, `docs/`, `LICENSE`.
 
 This file is the single rulebook for every coding agent working here. `CLAUDE.md` is a symlink to it, so Claude Code and Codex read the same content; keep it a symlink rather than materializing a second file that can drift. Claude Code subagent definitions live in `.claude/agents/` and are the one Claude-specific exception.
 
 * `/usr/local/sbin/tailscale_watchdogd`
 * `/usr/local/etc/rc.d/tailscale_watchdog`
+* `/usr/local/etc/rc.d/tailscale_watchdog.sh`
 * `/usr/local/etc/tailscale_watchdog.conf`
 * `/usr/local/etc/tailscale_watchdog.conf.example`
 
@@ -83,11 +84,13 @@ Preserve headers: `# PROVIDE: tailscale_watchdog`, `# REQUIRE: NETWORKING tailsc
 
 The wrapper must run the daemon in the background, maintain and validate a PID file, avoid stale PID hazards, stop with TERM before escalation, avoid passing debug mode through normal service flags, and fail visibly if startup fails.
 
+Boot hook: `/usr/local/etc/rc.d/tailscale_watchdog.sh` (repo file `tailscale_watchdog.sh`, `root:wheel` 0755). pfSense runs only `rc.d/*.sh` at boot (`rc.start_packages` with `start`, `rc.stop_packages` with `stop`). The hook stays a thin pass-through to `/usr/sbin/service tailscale_watchdog`: no logic, and no rcvar bypass such as `onestart`, so `tailscale_watchdog_enable="YES"` is still required. pfSense re-runs `rc.start_packages` after boot, so the wrapper's `start` must stay a no-op when its pidfile points at a live process.
+
 ## Installer / Uninstaller
 
-Installer must require root, verify pfSense/FreeBSD where practical, download over HTTPS only, syntax-check shell files before installing, install atomically, preserve any live config, install the example config, set secure ownership/permissions, avoid enabling/starting service automatically, and print clear next steps.
+Installer must require root, verify pfSense/FreeBSD where practical, download over HTTPS only, syntax-check shell files before installing, install atomically, preserve any live config, install the boot hook and example config, set secure ownership/permissions, avoid enabling/starting service automatically, and print clear next steps.
 
-Uninstaller must require root, stop with `onestop` where appropriate, remove installed daemon/wrapper/example config, ask before deleting live config, preserve live config by default without a TTY, remove project runtime state including `next_restart_allowed` and old compatibility files, remove only this project’s rc.conf entries, and never uninstall Tailscale.
+Uninstaller must require root, stop with `onestop` where appropriate, remove installed daemon/wrapper/boot hook/example config, ask before deleting live config, preserve live config by default without a TTY, remove project runtime state including `next_restart_allowed` and old compatibility files, remove only this project’s rc.conf entries, and never uninstall Tailscale.
 
 ## Testing and Testable Code
 
@@ -139,6 +142,7 @@ Always run these when shell files change:
 ```sh
 sh -n tailscale_watchdogd
 sh -n tailscale_watchdog
+sh -n tailscale_watchdog.sh
 sh -n tailscale_watchdog.conf.example
 sh -n install.sh
 sh -n uninstall.sh

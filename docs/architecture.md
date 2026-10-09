@@ -18,6 +18,7 @@ The installer places:
 
 - `/usr/local/sbin/tailscale_watchdogd`: foreground daemon.
 - `/usr/local/etc/rc.d/tailscale_watchdog`: rc.d wrapper.
+- `/usr/local/etc/rc.d/tailscale_watchdog.sh`: pfSense boot hook, a thin pass-through to the wrapper.
 - `/usr/local/etc/tailscale_watchdog.conf.example`: reference config.
 - `/usr/local/etc/tailscale_watchdog.conf`: private live config, created only when missing.
 
@@ -37,6 +38,12 @@ Restart impact is global to local Tailscale connectivity, even when one peer tri
 The rc.d wrapper runs the daemon in the background and writes `/var/run/tailscale_watchdog.pid`. It validates pidfile contents before signaling so corrupt or malicious pidfile data cannot be passed to `kill`.
 
 Notifications are dispatched through a provider selector. Pushover is the current provider, and restart/startup notification paths call only the generic `notify` entry point. Future providers should be added behind that dispatch boundary so restart behavior, cooldown behavior, and service control do not need to change.
+
+## pfSense Boot Model
+
+pfSense does not boot `/usr/local/etc/rc.d` the FreeBSD way: it does not run `rcorder` there, and its boot code does not consult `rc.conf.local` itself (`service(8)` does, when the hook calls it). `/etc/rc.start_packages` runs each `/usr/local/etc/rc.d/*.sh` as `<file> start` in the background, and `/etc/rc.stop_packages` runs each as `<file> stop`. The rc.d wrapper has no `.sh` suffix, so the boot hook `tailscale_watchdog.sh` exists to be found. It hands the command to `service(8)`, so the `tailscale_watchdog_enable` check still applies. pfSense also re-runs `rc.start_packages` after boot, so `start` can arrive while the daemon runs; the wrapper treats that as a no-op because its pidfile points at a live process.
+
+The enable check applies to `stop` as well. A daemon started by hand with `onestart` while the service is not enabled is therefore not stopped by `rc.stop_packages`; the hook's `stop` prints rc.subr's "Cannot 'stop'" notice into `/tmp/bootup_messages` and leaves it running. That is deliberate: the hook adds no rcvar bypass, and at shutdown the process dies regardless. Use `service tailscale_watchdog onestop` to stop such a daemon by hand.
 
 ## Install And Upgrade Model
 

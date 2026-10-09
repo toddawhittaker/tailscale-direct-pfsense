@@ -61,7 +61,7 @@ The installer:
 
 - checks that it is running as root on pfSense
 - checks that Tailscale is installed
-- downloads the watchdog daemon, service wrapper, and example config
+- downloads the watchdog daemon, service wrapper, pfSense boot hook, and example config
 - installs files in the appropriate locations
 - preserves any existing live config file
 - does not enable or start the service automatically
@@ -208,6 +208,8 @@ Add or update:
 tailscale_watchdog_enable="YES"
 ```
 
+The enable line is also what lets the watchdog start after a reboot. pfSense does not start every script in `/usr/local/etc/rc.d`; it runs only the ones ending in `.sh`. The installer adds `/usr/local/etc/rc.d/tailscale_watchdog.sh` for this. It passes start and stop to the normal service, so without the enable line it does nothing.
+
 Start the service:
 
 ```sh
@@ -248,6 +250,7 @@ Syntax-check the scripts before installing:
 ```sh
 sh -n tailscale_watchdogd
 sh -n tailscale_watchdog
+sh -n tailscale_watchdog.sh
 sh -n tailscale_watchdog.conf.example
 sh -n install.sh
 sh -n uninstall.sh
@@ -271,6 +274,16 @@ cp tailscale_watchdog "$tmp"
 chown root:wheel "$tmp"
 chmod 0755 "$tmp"
 mv -f "$tmp" /usr/local/etc/rc.d/tailscale_watchdog
+```
+
+Install the pfSense boot hook atomically. pfSense only starts scripts in `/usr/local/etc/rc.d` that end in `.sh`, so this is what starts the watchdog after a reboot:
+
+```sh
+tmp="$(mktemp /usr/local/etc/rc.d/.tailscale_watchdog.sh.XXXXXX)"
+cp tailscale_watchdog.sh "$tmp"
+chown root:wheel "$tmp"
+chmod 0755 "$tmp"
+mv -f "$tmp" /usr/local/etc/rc.d/tailscale_watchdog.sh
 ```
 
 Install the example config and create a starter live config only if one does not already exist:
@@ -306,7 +319,7 @@ curl -fsSL \
   | VERSION="${VERSION}" /bin/sh
 ```
 
-The installer updates the daemon, service wrapper, and example config. It preserves your live config at:
+The installer updates the daemon, service wrapper, boot hook, and example config. It preserves your live config at:
 
 ```text
 /usr/local/etc/tailscale_watchdog.conf
@@ -367,13 +380,19 @@ The uninstaller:
 
 - stops the watchdog service if it is running
 - removes watchdog service settings from `/etc/rc.conf.local`
-- removes the daemon, service wrapper, example config, and runtime state
+- removes the daemon, service wrapper, boot hook, example config, and runtime state
 - asks before removing the live config file
 - preserves the live config by default if no interactive TTY is available
 
 It does not remove the Tailscale package.
 
 ## Manual uninstall
+
+Remove the pfSense boot hook first, so pfSense cannot start the watchdog again while you work:
+
+```sh
+rm -f /usr/local/etc/rc.d/tailscale_watchdog.sh
+```
 
 Stop the service:
 
@@ -442,6 +461,22 @@ Common causes include:
 - invalid peer names
 - Tailscale is not authenticated or running
 - the expected service names are not available on the system; adjust `RESTART_SERVICES` to match the local pfSense service names
+
+### The service does not start after a reboot
+
+Check that the boot hook exists and is executable:
+
+```sh
+ls -l /usr/local/etc/rc.d/tailscale_watchdog.sh
+```
+
+It should be owned by root and mode `0755`. Then check that `/etc/rc.conf.local` contains `tailscale_watchdog_enable="YES"`, and look for watchdog lines in the boot log:
+
+```sh
+grep tailscale_watchdog /tmp/bootup_messages
+```
+
+If the hook is missing, re-run the installer.
 
 ### Notifications are not sent
 

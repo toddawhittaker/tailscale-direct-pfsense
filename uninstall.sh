@@ -24,7 +24,8 @@
 #
 # What this script does:
 #   1. Verifies it is running as root on pfSense.
-#   2. Stops the service if it is running (using onestop to bypass rcvar).
+#   2. Removes the pfSense boot hook, then stops the service if it is
+#      running (using onestop to bypass rcvar).
 #   3. Removes all tailscale_watchdog_* lines from rc.conf.local.
 #   4. Removes the daemon, rc wrapper, example config, and runtime state.
 #   5. Asks interactively whether to remove the live config file.
@@ -62,6 +63,7 @@ DOCS_URL="https://github.com/toddawhittaker/tailscale-direct-pfsense"
 
 DAEMON_DST="/usr/local/sbin/tailscale_watchdogd"
 RC_DST="/usr/local/etc/rc.d/tailscale_watchdog"
+HOOK_DST="/usr/local/etc/rc.d/tailscale_watchdog.sh"
 CONF_DST_EXAMPLE="/usr/local/etc/tailscale_watchdog.conf.example"
 CONF_DST_LIVE="/usr/local/etc/tailscale_watchdog.conf"
 
@@ -236,8 +238,9 @@ preflight_checks() {
   # and symlinks so that a symlink at either path is recognised as present,
   # consistent with how remove_file handles the same question.
   if [ ! -e "$DAEMON_DST" ] && [ ! -L "$DAEMON_DST" ] && \
-     [ ! -e "$RC_DST" ]     && [ ! -L "$RC_DST" ]; then
-    warn "Neither ${DAEMON_DST} nor ${RC_DST} found."
+     [ ! -e "$RC_DST" ]     && [ ! -L "$RC_DST" ] && \
+     [ ! -e "$HOOK_DST" ]   && [ ! -L "$HOOK_DST" ]; then
+    warn "None of ${DAEMON_DST}, ${RC_DST}, or ${HOOK_DST} found."
     warn "  The watchdog may not be installed on this system."
     warn "  Continuing to clean up any remaining files."
   fi
@@ -253,6 +256,14 @@ preflight_checks() {
 # continue safely.
 stop_service() {
   header "Stopping and disabling service"
+
+  # Remove the pfSense boot hook before stopping.  pfSense re-runs
+  # rc.start_packages after boot, not only at boot, and while the hook exists
+  # and the enable line is still in rc.conf.local, that could start the
+  # watchdog again right after onestop.  remove_files would then
+  # delete the wrapper and pidfile under a running daemon that nothing can
+  # stop.  Removing the hook first closes that path before the stop.
+  remove_file "$HOOK_DST"
 
   # Use onestop rather than stop.  The plain stop action checks the rcvar
   # (tailscale_watchdog_enable) and does nothing if the service is disabled

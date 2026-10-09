@@ -7,8 +7,17 @@
 # Documentation:
 #   https://github.com/toddawhittaker/tailscale-direct-pfsense
 #
-# Add the following to /etc/rc.conf.local to enable:
+# Add the following to /etc/rc.conf.local to allow the service to run:
 #   tailscale_watchdog_enable="YES"
+#
+# On pfSense that line alone does not start the watchdog at boot.  pfSense
+# does not run rcorder over /usr/local/etc/rc.d; its /etc/rc.start_packages
+# only runs scripts whose names end in .sh.  The installer therefore also
+# installs /usr/local/etc/rc.d/tailscale_watchdog.sh, a boot hook that calls
+# "service tailscale_watchdog start".  The enable line above still decides
+# whether that start is allowed, and this file remains the only
+# implementation.  The REQUIRE ordering below matters only on a plain
+# FreeBSD boot.
 #
 # Optional rc.conf.local settings and their defaults:
 #   tailscale_watchdog_command="/usr/local/sbin/tailscale_watchdogd"
@@ -30,13 +39,11 @@
 #   /usr/local/sbin/tailscale_watchdogd -t -1 -d
 #   /usr/local/sbin/tailscale_watchdogd -t -d
 #
-# Note: REQUIRE: tailscaled assumes tailscaled is managed as an rc service
-# on this pfSense installation with a matching PROVIDE token.  Verify before
-# deploying:
+# Note: the REQUIRE line orders startup only when FreeBSD's rcorder runs this
+# script.  pfSense's boot does not, so on pfSense the line has no effect and
+# does not need editing.  Its tokens assume tailscaled and pfsense_tailscaled
+# are rc services with matching PROVIDE tokens; to check:
 #   grep -R "^# PROVIDE:" /etc/rc.d /usr/local/etc/rc.d | grep -i tailscale
-# If pfsense_tailscaled also has a PROVIDE token, add it to REQUIRE as well.
-# If neither is rc.d-managed, remove them from the REQUIRE line to avoid
-# boot-time dependency warnings.
 
 . /etc/rc.subr
 
