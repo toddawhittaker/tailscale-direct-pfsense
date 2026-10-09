@@ -31,6 +31,7 @@ Prefer:
 
 * Quoted variables, explicit error handling, small functions, `case` validation.
 * Global variables only. Do not introduce `local`; there is none in the project today. Tests source `tailscale_watchdogd` and override globals such as `STATE_DIR`, `NEXT_RESTART_FILE`, and `FAIL_THRESHOLD` directly, so function-scoped variables would make new code untestable.
+* Because every variable is global, give a function's scratch variables a prefix unique to that function (`_cap_noglob`, `_rrd_noglob`). A shared name such as one `_noglob_was_set` used by a caller and the function it calls lets the inner function overwrite or `unset` the caller's copy; that is how `check_all_peers` once left `set -f` on for the life of the daemon.
 * `mktemp` for temp files.
 * Atomic installs/updates via temp file in destination directory plus `mv`.
 * `logger` for daemon/service logs.
