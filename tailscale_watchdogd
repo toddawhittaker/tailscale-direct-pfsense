@@ -360,9 +360,9 @@ validate_config() {
   fi
 
   _seen_safe=""
-  _noglob_was_set=0
+  _vpeer_noglob=0
   case $- in
-    *f*) _noglob_was_set=1 ;;
+    *f*) _vpeer_noglob=1 ;;
     *) set -f ;;
   esac
   for _vpeer in $PEERS; do
@@ -385,10 +385,10 @@ validate_config() {
     esac
     _seen_safe="${_seen_safe} ${_vsafe}"
   done
-  if [ "$_noglob_was_set" -eq 0 ]; then
+  if [ "$_vpeer_noglob" -eq 0 ]; then
     set +f
   fi
-  unset _vpeer _vsafe _seen_safe _noglob_was_set
+  unset _vpeer _vsafe _seen_safe _vpeer_noglob
 
   if ! is_positive_int "$CHECK_INTERVAL"; then
     echo "CHECK_INTERVAL must be a positive integer: $CHECK_INTERVAL" >&2
@@ -496,9 +496,9 @@ validate_config() {
     echo "RESTART_SETTLE_SECONDS must be <= ${RESTART_SETTLE_SECONDS_MAX} (the rc wrapper escalates to SIGKILL 10s after TERM): $RESTART_SETTLE_SECONDS" >&2
     exit 2
   fi
-  _noglob_was_set=0
+  _vsvc_noglob=0
   case $- in
-    *f*) _noglob_was_set=1 ;;
+    *f*) _vsvc_noglob=1 ;;
     *) set -f ;;
   esac
   for _vsvc in $RESTART_SERVICES; do
@@ -513,10 +513,10 @@ validate_config() {
         ;;
     esac
   done
-  if [ "$_noglob_was_set" -eq 0 ]; then
+  if [ "$_vsvc_noglob" -eq 0 ]; then
     set +f
   fi
-  unset _vsvc _noglob_was_set
+  unset _vsvc _vsvc_noglob
 }
 
 # curl_config_escape VALUE
@@ -842,9 +842,9 @@ set_peer_attr() {
 # Resets every peer after a successful restart and clears global deferral
 # state.  Restart impact is global, so all peer counters are reset together.
 reset_all_peer_state_after_restart() {
-  _noglob_was_set=0
+  _rap_noglob=0
   case $- in
-    *f*) _noglob_was_set=1 ;;
+    *f*) _rap_noglob=1 ;;
     *) set -f ;;
   esac
   for peer in $PEERS; do
@@ -852,11 +852,11 @@ reset_all_peer_state_after_restart() {
     set_peer_attr state "$peer" post_restart
     set_peer_attr threshold_seen "$peer" none
   done
-  if [ "$_noglob_was_set" -eq 0 ]; then
+  if [ "$_rap_noglob" -eq 0 ]; then
     set +f
   fi
   RESTART_DEFERRAL_ATTEMPTS=0
-  unset _noglob_was_set
+  unset _rap_noglob
 }
 
 # reset_restart_deferral_if_no_threshold
@@ -865,25 +865,25 @@ reset_all_peer_state_after_restart() {
 # threshold.  This prevents stale busy-traffic deferrals from affecting a
 # later, unrelated relay episode.
 reset_restart_deferral_if_no_threshold() {
-  _noglob_was_set=0
+  _rrd_noglob=0
   case $- in
-    *f*) _noglob_was_set=1 ;;
+    *f*) _rrd_noglob=1 ;;
     *) set -f ;;
   esac
   for peer in $PEERS; do
     count="$(get_peer_attr count "$peer" 0)"
     if [ "$count" -ge "$FAIL_THRESHOLD" ]; then
-      if [ "$_noglob_was_set" -eq 0 ]; then
+      if [ "$_rrd_noglob" -eq 0 ]; then
         set +f
       fi
-      unset _noglob_was_set
+      unset _rrd_noglob
       return 0
     fi
   done
-  if [ "$_noglob_was_set" -eq 0 ]; then
+  if [ "$_rrd_noglob" -eq 0 ]; then
     set +f
   fi
-  unset _noglob_was_set
+  unset _rrd_noglob
 
   if [ "$RESTART_DEFERRAL_ATTEMPTS" -gt 0 ]; then
     log_msg "Restart deferral state reset: no peer remains at the relay threshold"
@@ -1373,9 +1373,9 @@ restart_tailscale_services() {
     return 1
   fi
 
-  _noglob_was_set=0
+  _rts_noglob=0
   case $- in
-    *f*) _noglob_was_set=1 ;;
+    *f*) _rts_noglob=1 ;;
     *) set -f ;;
   esac
   # Everything from the first stop to the last start is a critical section.  A
@@ -1471,10 +1471,10 @@ restart_tailscale_services() {
       log_msg "Service restart FAILED: ${svc}; rc=${rc}; output=${output}"
     fi
   done
-  if [ "$_noglob_was_set" -eq 0 ]; then
+  if [ "$_rts_noglob" -eq 0 ]; then
     set +f
   fi
-  unset _noglob_was_set
+  unset _rts_noglob
 
   # End of the critical section.  Every service that was stopped has had its
   # start attempted, so it is safe to honour a shutdown that arrived meanwhile.
@@ -1660,18 +1660,18 @@ check_peer() {
 # Checks every configured peer once.  Globbing is disabled around PEERS word
 # splitting so peer names are treated as literal configured tokens.
 check_all_peers() {
-  _noglob_was_set=0
+  _cap_noglob=0
   case $- in
-    *f*) _noglob_was_set=1 ;;
+    *f*) _cap_noglob=1 ;;
     *) set -f ;;
   esac
   for peer in $PEERS; do
     check_peer "$peer"
   done
-  if [ "$_noglob_was_set" -eq 0 ]; then
+  if [ "$_cap_noglob" -eq 0 ]; then
     set +f
   fi
-  unset _noglob_was_set
+  unset _cap_noglob
 }
 
 # ---- Signal handling -------------------------------------------------------
