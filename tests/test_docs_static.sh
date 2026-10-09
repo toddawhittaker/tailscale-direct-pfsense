@@ -102,3 +102,60 @@ assert_contains "uninstaller header includes documentation URL" \
 
 assert_contains "uninstaller output includes documentation URL" \
   "$uninstall_text" 'Documentation:'
+
+# pfSense boot hook.  pfSense runs only /usr/local/etc/rc.d/*.sh at boot, so
+# the hook must appear wherever installed files are listed.  Each needle is a
+# whole command line or heading, so prose that merely names the path cannot
+# satisfy it.
+architecture_text="$(cat "${REPO_ROOT}/docs/architecture.md")"
+testing_text="$(cat "${REPO_ROOT}/docs/testing.md")"
+hook_path="/usr/local/etc/rc.d/tailscale_watchdog.sh"
+
+assert_contains "README manual install places the boot hook atomically" \
+  "$readme_text" "mv -f \"\$tmp\" ${hook_path}"
+
+assert_contains "README manual install stages the boot hook with mktemp" \
+  "$readme_text" 'tmp="$(mktemp /usr/local/etc/rc.d/.tailscale_watchdog.sh.XXXXXX)"'
+
+assert_contains "README manual uninstall removes the boot hook" \
+  "$readme_text" "rm -f ${hook_path}"
+
+assert_not_contains "README manual install does not overwrite boot hook with direct cp" \
+  "$readme_text" "cp tailscale_watchdog.sh ${hook_path}"
+
+assert_contains "README syntax-checks the boot hook" \
+  "$readme_text" "sh -n tailscale_watchdog.sh"
+
+assert_contains "README has a reboot troubleshooting entry" \
+  "$readme_text" "### The service does not start after a reboot"
+
+assert_contains "README reboot troubleshooting names the boot log" \
+  "$readme_text" "grep tailscale_watchdog /tmp/bootup_messages"
+
+assert_contains "AGENTS lists the boot hook as an installed path" \
+  "$agents_text" "* \`${hook_path}\`"
+
+assert_contains "AGENTS requires the boot hook to stay a pass-through" \
+  "$agents_text" "The hook stays a thin pass-through to \`/usr/sbin/service tailscale_watchdog\`"
+
+assert_contains "AGENTS syntax-checks the boot hook" \
+  "$agents_text" "sh -n tailscale_watchdog.sh"
+
+assert_contains "architecture lists the boot hook" \
+  "$architecture_text" "- \`${hook_path}\`: pfSense boot hook"
+
+assert_contains "architecture explains the pfSense boot model" \
+  "$architecture_text" "## pfSense Boot Model"
+
+assert_contains "script reference documents the boot hook" \
+  "$script_reference_text" '## `tailscale_watchdog.sh`'
+
+assert_contains "testing docs syntax-check the boot hook" \
+  "$testing_text" "sh -n tailscale_watchdog.sh"
+
+# The code side of the same coupling.
+assert_contains "installer installs the boot hook" \
+  "$install_text" "HOOK_DST=\"${hook_path}\""
+
+assert_contains "uninstaller removes the boot hook" \
+  "$uninstall_text" 'remove_file "$HOOK_DST"'

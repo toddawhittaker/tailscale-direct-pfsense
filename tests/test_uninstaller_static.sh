@@ -21,3 +21,21 @@ assert_contains "uninstaller asks before live config removal" "$uninstall_text" 
 assert_contains "uninstaller does not remove Tailscale package" "$uninstall_text" "The Tailscale package itself was not removed"
 assert_not_contains "uninstaller does not call package remove" "$uninstall_text" "pkg delete tailscale"
 assert_not_contains "uninstaller does not remove tailscale binary" "$uninstall_text" "rm -f /usr/local/bin/tailscale"
+assert_contains "uninstaller names the boot hook path" "$uninstall_text" 'HOOK_DST="/usr/local/etc/rc.d/tailscale_watchdog.sh"'
+assert_contains "uninstaller removes the boot hook" "$uninstall_text" 'remove_file "$HOOK_DST"'
+
+# The hook must go before the stop.  pfSense re-runs rc.start_packages after
+# boot, so a hook that outlives onestop can start the watchdog again, and
+# remove_files would then delete the wrapper and pidfile under it.  Compare
+# the first non-comment line of each; a missing line reads as 0 and fails.
+# This checks text order, not run order: a helper defined above stop_service
+# but called after onestop would pass.  docs/script-reference.md is the rule.
+hook_line="$(grep -n -F 'remove_file "$HOOK_DST"' "${REPO_ROOT}/uninstall.sh" | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
+onestop_line="$(grep -n -F 'service "$SERVICE_NAME" onestop' "${REPO_ROOT}/uninstall.sh" | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
+if [ "${hook_line:-0}" -gt 0 ] && [ "${onestop_line:-0}" -gt "${hook_line:-0}" ]; then
+  hook_order="hook removed before onestop"
+else
+  hook_order="hook line ${hook_line:-missing}, onestop line ${onestop_line:-missing}"
+fi
+assert_eq "uninstaller removes the boot hook before stopping the service" \
+  "hook removed before onestop" "$hook_order"

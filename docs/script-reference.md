@@ -59,6 +59,14 @@ It owns:
 
 The wrapper intentionally does not pass debug mode through default service flags. Debug output is for direct foreground test runs.
 
+## `tailscale_watchdog.sh`
+
+The pfSense boot hook is installed at `/usr/local/etc/rc.d/tailscale_watchdog.sh`, because pfSense runs only `.sh` files from that directory at boot and shutdown.
+
+It owns only the dispatch of `start`, `stop`, `restart`, and `status` to `/usr/sbin/service tailscale_watchdog`.
+
+It holds no logic so the rc.d wrapper stays the single implementation. It goes through `service(8)` rather than calling the wrapper or daemon directly so the `tailscale_watchdog_enable` check still applies; installing the hook never enables the service.
+
 ## `install.sh`
 
 The installer is a root script, so it is deliberately conservative.
@@ -69,10 +77,13 @@ It owns:
 - HTTPS-only downloads from GitHub;
 - shell syntax validation before install;
 - atomic installation using temp files in destination directories and `mv`;
+- installing the pfSense boot hook with the daemon and wrapper;
 - live config preservation;
 - secure ownership and permissions.
 
 It does not enable, start, stop, or restart the service. Operators must review config and start or restart the service themselves.
+
+Installing the boot hook does change one thing on an upgrade: a router that has the enable line but keeps the service stopped will now be started by pfSense at the next boot or package restart, because pfSense used to ignore that line and the hook makes it count. The installer warns when it finds the service enabled but not running, so that start is never a surprise.
 
 ## `uninstall.sh`
 
@@ -80,9 +91,10 @@ The uninstaller removes this project without removing Tailscale itself.
 
 It owns:
 
+- removing the boot hook before `onestop`, so a re-run of `rc.start_packages` cannot start the watchdog again between the stop and the file removal;
 - stopping the watchdog with `onestop`;
 - removing only this project's rc.conf assignments;
-- removing installed daemon, rc wrapper, example config, pidfile, and runtime state;
+- removing installed daemon, rc wrapper, boot hook, example config, pidfile, and runtime state;
 - asking before removing the live config;
 - preserving the live config when no TTY is available.
 

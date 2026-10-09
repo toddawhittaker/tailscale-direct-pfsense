@@ -14,6 +14,7 @@ Always syntax-check shell files after changing them:
 ```sh
 sh -n tailscale_watchdogd
 sh -n tailscale_watchdog
+sh -n tailscale_watchdog.sh
 sh -n tailscale_watchdog.conf.example
 sh -n install.sh
 sh -n uninstall.sh
@@ -54,6 +55,7 @@ Current tests cover:
 - restart deferral with fake interface counters;
 - notification handling with fake `curl`, including rejecting a request that mixes curl's multipart and URL-encoded request methods and rejecting a config-stream value that is silently truncated at a newline;
 - per-peer state transitions;
+- pfSense boot hook dispatch and repeat-start no-op behavior with fake commands;
 - installer, uninstaller, rc wrapper, and docs static safety checks.
 
 ## Documentation Coupling

@@ -14,3 +14,4 @@ assert_success "syntax: tailscale_watchdog" sh -n tailscale_watchdog
 assert_success "syntax: tailscale_watchdog.conf.example" sh -n tailscale_watchdog.conf.example
 assert_success "syntax: install.sh" sh -n install.sh
 assert_success "syntax: uninstall.sh" sh -n uninstall.sh
+assert_success "syntax: tailscale_watchdog.sh" sh -n tailscale_watchdog.sh
