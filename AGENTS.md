@@ -75,6 +75,7 @@ Preserve watchdog behavior:
 * Successful restart resets peer relay counters.
 * Failed restart leaves counters intact so retry can happen after cooldown.
 * Signal handling should stop the loop promptly, including active sleep.
+* Interface group repair (`INTERFACE_GROUP_REPAIR_ENABLED`) is opt-in and defaults to off, because it reloads the packet filter on a live router. It acts only after two consecutive checks find `tailscale0` missing from the `Tailscale` group, which at normal check intervals avoids racing `pfsense_tailscaled`'s post-start hook (a very short `-i` interval can still race it). After a repair that touched the firewall, success or reload failure, another waits at least `IFGROUP_REPAIR_MIN_SECONDS` (900, fixed in `reset_runtime_state`, not a setting); a failed add does not start the holdoff. It never repairs on unrecognised `ifconfig` output or an absent interface. The group add and the filter reload run in one foreground subshell with output sent to `/dev/null`, not a pipe, so a `TERM` cannot split them and a `SIGKILL` cannot `SIGPIPE` the orphan. The interface, group, and reload command are fixed in `reset_runtime_state`, not settings, and stay out of `README.md` and the config example. The repair is logged before the subshell runs, so a shutdown right after it still leaves a record. Healthy checks write nothing.
 
 ## rc.d Wrapper Invariants
 
@@ -125,6 +126,8 @@ service tailscale_watchdog onestop
 service tailscaled restart
 service pfsense_tailscaled restart
 tailscale ping
+ifconfig tailscale0 group Tailscale
+/etc/rc.filter_configure_sync
 ```
 
 When testing command behavior, fake `tailscale`, `service`, `logger`, `curl`, `date`, or similar tools in a temporary `PATH`.

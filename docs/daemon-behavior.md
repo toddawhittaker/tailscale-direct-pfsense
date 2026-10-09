@@ -104,6 +104,50 @@ That reset covers the whole runtime-state block rather than an enumerated list, 
 
 The daemon does not bound the critical section itself. A `stop` blocked on a wedged `tailscaled`, or a `start` waiting on `tailscale0`, holds it open for as long as those take, and `TERM` and `INT` are both deferred for that whole time. That is inherent to the deferral and is the correct trade against exiting mid-restart, but it does mean the cap governs only the portion of the window the daemon controls.
 
+## Interface Group Repair
+
+This is an opt-in check (`INTERFACE_GROUP_REPAIR_ENABLED`, default 0) that runs at the start of every check cycle, before the peer checks. It is separate from the relay logic and does not touch peer counters, cooldown, or deferral.
+
+### Why it exists
+
+pfSense's Tailscale package writes every Tailscale firewall rule (outbound NAT, the pass rule, the kill switch) against the `Tailscale` interface group. The group is added by `pfsense_tailscaled`'s post-start hook, and rc.subr skips that hook when the start returns non-zero, which happens when `tailscaled` is already running (see "Why stop and start are separate"). So if `tailscaled` is restarted by anything other than that start, `tailscale0` can return in group `tun` only. The router's own pings need no NAT, so every peer still looks direct and the watchdog's peer checks see nothing wrong, while LAN traffic enters the tunnel un-NATed and is dropped. This was seen once in the field after an unexplained `tailscaled` restart.
+
+The manual fix is `ifconfig tailscale0 group Tailscale` followed by `/etc/rc.filter_configure_sync`. The check automates exactly that.
+
+### The two-check rule
+
+The group must be missing on two consecutive checks before anything changes. The post-start hook adds the group a few seconds after `tailscale0` appears, so a single observation can land inside that wait. The first miss is only logged. At normal intervals (the default `CHECK_INTERVAL` is 60 seconds) the second check falls well after the hook has finished, so the two-check rule avoids racing it. With a very short `-i` interval, both checks can fall inside the hook's wait. The worst cases are a redundant filter reload, or the add race described under Outcomes.
+
+### Repair holdoff
+
+After a repair that touched the firewall, whether it succeeded or only the reload failed, another repair waits at least `IFGROUP_REPAIR_MIN_SECONDS` (900 seconds, fixed in `reset_runtime_state`, not a setting). If something keeps restarting `tailscaled`, this stops the packet filter from being reloaded every couple of minutes forever. While held off, a missing group is logged once, and the log line says how long the daemon will wait. A failed add does not start the holdoff, since the firewall was not touched; it retries every check. The holdoff lives in memory as an absolute time, so a remaining wait longer than the holdoff itself is read as the clock having stepped backwards, and the holdoff is treated as over rather than stretched.
+
+### One subshell for add and reload
+
+The group add and the filter reload run together in one foreground subshell. A `TERM` handled by the daemon cannot land between them and leave the group added but the rules not reloaded. The daemon logs `Interface group repair: re-adding ...` before the subshell starts, so a shutdown that exits right after it still leaves a record.
+
+The cost is stop timing: a `TERM` during a repair is held until the subshell finishes, so stopping can be delayed by one filter reload. If that exceeds the rc wrapper's 10-second window, the wrapper sends `SIGKILL` and the daemon dies, but the orphaned reload still completes. Output goes to `/dev/null`, not a pipe the daemon owns, for the same reason `run_service_command` uses a file: a pipe closed by a `SIGKILL` would kill the orphaned reload with `SIGPIPE` partway through.
+
+### Fixed values, not settings
+
+The interface (`tailscale0`), the group (`Tailscale`), and the reload command (`/etc/rc.filter_configure_sync`) are fixed internal values set in `reset_runtime_state`, like the state paths. Making them settings would let a stray config line point a root-run command somewhere else, and the repair only makes sense for this pfSense package's own names. The miss counter and the last status are in-memory only; there are no state files.
+
+### Outcomes
+
+- Group present: nothing is written or logged. If the group returns after being missing, after a failed add, or during a holdoff, one log line says so. Recovery after unrecognised output is not logged.
+- Group missing once: logged; no action yet.
+- Group missing on a second consecutive check, outside a holdoff: the group is re-added, the filter is reloaded, the result is logged, and a notification is sent. The repair restores the group and reloads the filter only; it does not re-run the package's `tailscale up`. In test mode the daemon logs that it would re-add and does nothing.
+- Group missing during a holdoff: logged once; no action until the holdoff ends.
+- Interface absent: nothing happens. The peer checks already report unknown paths in that case.
+- No groups line in the `ifconfig` output: logged once, and the daemon never repairs. It will not act on output it does not recognize.
+- Group add fails because the group reappeared meanwhile: FreeBSD refuses to add an interface to a group it is already in, which means the package's own hook won the race. The daemon re-reads `ifconfig`, logs that the interface rejoined and there is nothing to do, and sends no notification. This applies only when the add itself was refused. If the repair subshell was killed part way, the group may be present without a reload, so that is reported as a failed repair and retried instead.
+- Group add fails for another reason: logged and notified once, then retried on every check.
+- Filter reload fails: logged and notified with a prompt to run the reload by hand. It is not retried, because the group is back and a second reload would not be a safe guess. Whether the exit status of `/etc/rc.filter_configure_sync` reflects a rejected ruleset is unverified, so a reload-failed report may be rarer than real failures.
+
+### Why it is off by default
+
+It is a new live action on the firewall: it reloads the packet filter, which briefly disturbs traffic. It is also specific to pfSense's Tailscale package. Operators opt in once they know they want it.
+
 ## Decision Flow
 
 ```mermaid
@@ -129,6 +173,8 @@ flowchart TD
 ## Logging
 
 The daemon logs notable transitions, suppression decisions, restart decisions, restart cooldown selection, service restart results, notification failures, and shutdown. When enabled and configured, it also sends a startup notification for normal long-running daemon starts. Notifications include the local router's Tailscale name, detected from local Tailscale status unless `LOCAL_TAILSCALE_NAME` is set in the config.
+
+Interface group repair, when enabled, logs the first missed observation, the repair and its result, and recovery. A healthy group check logs nothing. The startup log line includes `interface_group_repair=`, and the startup notification includes an `Interface group repair:` line.
 
 It does not log every successful direct check. Quiet logs during healthy operation are intentional.
 
