@@ -4,14 +4,15 @@ This document explains the role of each script and the safety behavior it owns.
 
 ## `tailscale_watchdogd`
 
-The daemon is foreground-only. It validates the config file, checks peers, classifies paths, manages in-memory peer counters, applies cooldown and deferral gates, restarts configured services, and sends optional provider-based notifications.
+The daemon is foreground-only. It validates the config file, checks peers, classifies paths, manages in-memory peer counters, applies cooldown and deferral gates, restarts configured services, optionally repairs a missing Tailscale interface group, and sends optional provider-based notifications.
 
 Control flow through a run:
 
 ```text
 main
   pre-scan argv for -f -> load_config_file -> getopts -> validate_config
-  loop: check_all_peers
+  loop: check_interface_group   (opt-in; runs ifconfig, then group add and /etc/rc.filter_configure_sync after two consecutive misses)
+        check_all_peers
           check_peer
             check_peer_path -> classify_ping_output
             handle_direct | handle_unknown | handle_relayed
