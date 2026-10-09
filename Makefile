@@ -14,7 +14,8 @@ TESTS = \
 	tests/test_installer_static.sh \
 	tests/test_boot_hook.sh \
 	tests/test_rc_static.sh \
-	tests/test_uninstaller_static.sh
+	tests/test_uninstaller_static.sh \
+	tests/test_interface_group.sh
 
 .PHONY: smoke test
 

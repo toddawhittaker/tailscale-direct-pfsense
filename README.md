@@ -111,6 +111,10 @@ RESTART_DEFERRAL_CHECK_SECONDS=30
 RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
 
+# pfSense only. Re-add tailscale0 to the Tailscale interface group (and reload
+# the packet filter) if the group goes missing. Off by default.
+INTERFACE_GROUP_REPAIR_ENABLED=0
+
 # Services restarted when the threshold is reached.
 RESTART_SERVICES="pfsense_tailscaled"
 
@@ -177,6 +181,16 @@ The deferral scope is interface-wide, not per peer. That is intentional because 
 The watchdog samples total received and sent bytes on `RESTART_DEFERRAL_INTERFACE` for `RESTART_DEFERRAL_CHECK_SECONDS`. If the byte delta is greater than `RESTART_DEFERRAL_MAX_BYTES`, it defers the restart and tries again on a later check. Deferrals are bounded by `RESTART_DEFERRAL_MAX_ATTEMPTS`; after that, the watchdog proceeds with the restart.
 
 A deferred restart does not consume the randomized restart cooldown. The cooldown is written only immediately before an actual restart attempt. If interface activity detection is unavailable or returns unexpected output, the watchdog logs the problem and proceeds with the restart decision.
+
+### Interface group repair
+
+pfSense writes its Tailscale firewall rules (outbound NAT, the pass rule, and the kill switch) against the `Tailscale` interface group. If `tailscaled` is restarted by something other than the `pfsense_tailscaled` service start, `tailscale0` can come back without that group. The router's own pings still work, so the watchdog sees every peer as direct, but LAN traffic going into the tunnel is no longer NATed and is dropped.
+
+Set `INTERFACE_GROUP_REPAIR_ENABLED=1` to have the watchdog check this on every cycle. If `tailscale0` is missing from the group on two checks in a row, the watchdog adds it back, runs `/etc/rc.filter_configure_sync` to reload the packet filter, logs the repair, and sends a notification. After a repair it waits at least 15 minutes before repairing again, so a router that keeps losing the group does not reload its filter over and over. A healthy check writes and logs nothing.
+
+A one-shot run (`-1`, including `-t -1`) checks only once, so it can report a missing group but never repairs it or shows the test-mode "would re-add" line.
+
+It is off by default because it reloads the packet filter on a live router, and it only makes sense on pfSense. Turn it on if you have seen the failure described under Troubleshooting. See [LAN traffic over Tailscale fails while the watchdog reports peers direct](#lan-traffic-over-tailscale-fails-while-the-watchdog-reports-peers-direct).
 
 ## Test before enabling
 
@@ -511,6 +525,23 @@ command -v curl
 ### The service runs but logs are quiet
 
 That is normal when peers are direct and healthy. The watchdog logs startup, shutdown, relay events, restart attempts, restart results, and notable errors. It does not log every successful check.
+
+### LAN traffic over Tailscale fails while the watchdog reports peers direct
+
+If devices behind the router cannot reach peers over Tailscale, but the router itself can, `tailscale0` may have lost its `Tailscale` interface group. Check:
+
+```sh
+ifconfig tailscale0 | grep groups
+```
+
+A healthy interface lists `Tailscale` among its groups. If you see only `tun`, fix it by hand:
+
+```sh
+ifconfig tailscale0 group Tailscale
+/etc/rc.filter_configure_sync
+```
+
+To have the watchdog do this for you in future, set `INTERFACE_GROUP_REPAIR_ENABLED=1` and restart the watchdog service. Look for `Interface group` lines in the system log to see what it did.
 
 ## Limitations
 

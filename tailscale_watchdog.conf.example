@@ -93,6 +93,20 @@ RESTART_DEFERRAL_CHECK_SECONDS=30
 RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
 
+# Interface group repair (pfSense only).  pfSense writes its Tailscale firewall
+# rules against the "Tailscale" interface group.  If tailscaled is restarted by
+# anything other than the pfsense_tailscaled start, tailscale0 can come back
+# without that group.  The router's own pings still work, so peers look direct,
+# but LAN traffic through the tunnel is no longer NATed and is dropped.
+#
+# When 1, the watchdog checks each cycle that tailscale0 is in the Tailscale
+# group.  If it is missing on two checks in a row, it adds the group back and
+# runs /etc/rc.filter_configure_sync, which reloads the packet filter.  Off by
+# default because it changes the live firewall.  After a repair it waits at least
+# 15 minutes before repairing again.  A one-shot run (-1) checks only once, so it
+# can report a missing group but never repair it.
+INTERFACE_GROUP_REPAIR_ENABLED=0
+
 # Services to restart when the relay threshold is reached.
 #
 # pfsense_tailscaled alone is correct on pfSense: its rc.d stop and start

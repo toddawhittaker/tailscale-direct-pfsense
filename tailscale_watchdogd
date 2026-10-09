@@ -83,6 +83,10 @@ RESTART_DEFERRAL_INTERFACE="tailscale0"
 RESTART_DEFERRAL_CHECK_SECONDS=30
 RESTART_DEFERRAL_MAX_BYTES=65536
 RESTART_DEFERRAL_MAX_ATTEMPTS=10
+# Off by default.  When 1, re-add tailscale0 to the Tailscale interface group
+# and reload the packet filter if the group has gone missing.  See
+# check_interface_group.
+INTERFACE_GROUP_REPAIR_ENABLED=0
 CURL_TIMEOUT=10
 
 # ---- Runtime state ---------------------------------------------------------
@@ -139,6 +143,21 @@ reset_runtime_state() {
   # the restart path exits once the start has run.
   RESTART_CRITICAL=0
   SHUTDOWN_PENDING=0
+
+  # Interface group repair.  The interface, the group, and the reload command
+  # are fixed by the pfSense Tailscale package, not chosen here, so they are not
+  # settings.  Kept as variables so tests can point them at fakes.
+  IFGROUP_INTERFACE="tailscale0"
+  IFGROUP_NAME="Tailscale"
+  FILTER_RELOAD_COMMAND="/etc/rc.filter_configure_sync"
+  # Consecutive checks that found the group missing, and the last reported
+  # condition, so that a lasting problem is logged once rather than every check.
+  IFGROUP_MISSING_CHECKS=0
+  IFGROUP_STATUS=""
+  # Earliest epoch at which another repair may run, and the fixed gap that
+  # sets it.  Bounds filter reloads if the group keeps going missing.
+  IFGROUP_NEXT_REPAIR_ALLOWED=0
+  IFGROUP_REPAIR_MIN_SECONDS=900
 
   # Derived from the rc wrapper's SIGKILL escalation window, not chosen.
   RESTART_SETTLE_SECONDS_MAX=4
@@ -442,6 +461,10 @@ validate_config() {
     echo "RESTART_DEFERRAL_ENABLED must be 0 or 1: $RESTART_DEFERRAL_ENABLED" >&2
     exit 2
   fi
+  if ! is_bool "$INTERFACE_GROUP_REPAIR_ENABLED"; then
+    echo "INTERFACE_GROUP_REPAIR_ENABLED must be 0 or 1: $INTERFACE_GROUP_REPAIR_ENABLED" >&2
+    exit 2
+  fi
   if [ -z "$RESTART_DEFERRAL_INTERFACE" ]; then
     echo "RESTART_DEFERRAL_INTERFACE must not be empty" >&2
     exit 2
@@ -725,6 +748,11 @@ startup_notification_message() {
   else
     printf 'Restart deferral: disabled\n'
   fi
+  if [ "$INTERFACE_GROUP_REPAIR_ENABLED" -eq 1 ]; then
+    printf 'Interface group repair: enabled (%s in %s)\n' "$IFGROUP_INTERFACE" "$IFGROUP_NAME"
+  else
+    printf 'Interface group repair: disabled\n'
+  fi
   printf 'Docs: %s' "$DOCS_URL"
 }
 
@@ -762,6 +790,53 @@ restart_notification_message() {
   printf 'Trigger peer: %s\n' "$reason_peer"
   printf 'Relay count: %s consecutive checks\n' "$reason_count"
   printf 'Services: %s' "$RESTART_SERVICES"
+}
+
+# interface_group_notification_title ROUTER_NAME RESULT
+interface_group_notification_title() {
+  case "$2" in
+    success)
+      printf 'Tailscale watchdog: %s interface group repaired' "$1"
+      ;;
+    *)
+      printf 'Tailscale watchdog: %s interface group repair failed' "$1"
+      ;;
+  esac
+}
+
+# interface_group_notification_message ROUTER_NAME RESULT
+#
+# RESULT is success, reload_failed (the group was re-added but the filter
+# reload failed), or add_failed (the group could not be re-added).
+interface_group_notification_message() {
+  printf 'Router: %s\n' "$1"
+  case "$2" in
+    success)
+      printf 'Event: %s was missing from interface group %s; re-added it and reloaded the filter\n' "$IFGROUP_INTERFACE" "$IFGROUP_NAME"
+      ;;
+    reload_failed)
+      printf 'Event: %s was missing from interface group %s; re-added it, but the filter reload failed\n' "$IFGROUP_INTERFACE" "$IFGROUP_NAME"
+      printf 'Action: run %s by hand\n' "$FILTER_RELOAD_COMMAND"
+      ;;
+    add_failed)
+      printf 'Event: %s is missing from interface group %s and could not be re-added\n' "$IFGROUP_INTERFACE" "$IFGROUP_NAME"
+      ;;
+  esac
+  printf 'Docs: %s' "$DOCS_URL"
+}
+
+# notify_interface_group RESULT
+#
+# Sends an interface group repair notification.  Provider failures are logged
+# by notify and never change what the repair did.
+notify_interface_group() {
+  if ! notifications_may_send; then
+    return 0
+  fi
+  router_name="$(local_tailscale_name)"
+  notify \
+    "$(interface_group_notification_title "$router_name" "$1")" \
+    "$(interface_group_notification_message "$router_name" "$1")"
 }
 
 # notify_startup_if_enabled
@@ -1674,6 +1749,199 @@ check_all_peers() {
   unset _noglob_was_set
 }
 
+# ---- Interface group repair ------------------------------------------------
+#
+# pfSense writes every Tailscale firewall rule against the "Tailscale"
+# interface group: the outbound NAT, the pass rule, and the kill switch.
+# pfsense_tailscaled's post-start hook is what adds tailscale0 to that group,
+# and rc.subr skips the hook when the start command returns non-zero -- which
+# the package's start does when it finds tailscaled already running.  So a
+# tailscaled that comes back by any path other than that start brings
+# tailscale0 up in the "tun" group alone.  The router's own pings still work,
+# because they need no NAT, so every peer classifies direct while LAN traffic
+# leaves the tunnel un-NATed and is dropped at the far end.  Peer checks
+# cannot see this, so it gets its own check.  See docs/daemon-behavior.md.
+
+# interface_output_has_group GROUP
+#
+# Reads ifconfig(8) output for one interface on stdin.  Returns 0 when its
+# groups line lists GROUP, 1 when the line does not, and 2 when there is no
+# groups line at all -- output this function does not recognise, which must
+# never be read as "missing" and trigger a repair.
+interface_output_has_group() {
+  awk -v want="$1" '
+    $1 == "groups:" {
+      seen = 1
+      for (i = 2; i <= NF; i++) {
+        if ($i == want) {
+          found = 1
+        }
+      }
+    }
+    END {
+      if (!seen) {
+        exit 2
+      }
+      exit found ? 0 : 1
+    }'
+}
+
+# check_interface_group
+#
+# When INTERFACE_GROUP_REPAIR_ENABLED is 1, confirms that IFGROUP_INTERFACE is
+# in IFGROUP_NAME, and re-adds it and reloads the filter when it is not.  A
+# healthy check writes nothing and logs nothing.
+#
+# The group must be missing on two consecutive checks before anything changes.
+# pfsense_tailscaled's own post-start hook adds the group a few seconds after
+# tailscale0 appears, so a check landing inside that wait would otherwise race
+# the hook with a second filter reload.
+check_interface_group() {
+  if [ "$INTERFACE_GROUP_REPAIR_ENABLED" -ne 1 ]; then
+    return 0
+  fi
+
+  # Safe as a command substitution: ifconfig returns at once.
+  if ! _cig_output="$(ifconfig "$IFGROUP_INTERFACE" 2>/dev/null)"; then
+    # No interface means tailscaled is down or mid-restart.  There is nothing
+    # to attach a group to, and the peer checks already report it as unknown.
+    debug_msg "interface group check: ${IFGROUP_INTERFACE} not present"
+    IFGROUP_MISSING_CHECKS=0
+    unset _cig_output
+    return 0
+  fi
+
+  printf '%s\n' "$_cig_output" | interface_output_has_group "$IFGROUP_NAME"
+  _cig_rc=$?
+  unset _cig_output
+  case "$_cig_rc" in
+    0)
+      if [ "$IFGROUP_STATUS" = "add_failed" ] || [ "$IFGROUP_STATUS" = "missing" ] || [ "$IFGROUP_STATUS" = "holdoff" ]; then
+        log_msg "Interface group check: ${IFGROUP_INTERFACE} is in interface group ${IFGROUP_NAME} again"
+      fi
+      IFGROUP_MISSING_CHECKS=0
+      IFGROUP_STATUS="ok"
+      unset _cig_rc
+      return 0
+      ;;
+    1)
+      ;;
+    *)
+      if [ "$IFGROUP_STATUS" != "unrecognised" ]; then
+        log_msg "Interface group check: no groups line in 'ifconfig ${IFGROUP_INTERFACE}' output; not repairing"
+      fi
+      IFGROUP_MISSING_CHECKS=0
+      IFGROUP_STATUS="unrecognised"
+      unset _cig_rc
+      return 0
+      ;;
+  esac
+  unset _cig_rc
+
+  IFGROUP_MISSING_CHECKS=$((IFGROUP_MISSING_CHECKS + 1))
+  if [ "$IFGROUP_MISSING_CHECKS" -lt 2 ]; then
+    if [ "$ONE_SHOT" -eq 1 ]; then
+      log_msg "Interface group check: ${IFGROUP_INTERFACE} is not in interface group ${IFGROUP_NAME}; the running daemon repairs this if it is still missing at its next check"
+    else
+      log_msg "Interface group check: ${IFGROUP_INTERFACE} is not in interface group ${IFGROUP_NAME}; repairing if it is still missing at the next check"
+    fi
+    if [ "$IFGROUP_STATUS" != "add_failed" ]; then
+      IFGROUP_STATUS="missing"
+    fi
+    return 0
+  fi
+
+  # A group that keeps going missing means something keeps restarting
+  # tailscaled.  Repairing every other check would reload the firewall every
+  # couple of minutes indefinitely, so repairs are spaced out, like restarts.
+  _cig_now="$(date +%s)"
+  # A wait longer than the holdoff itself means the clock stepped backwards
+  # since the last repair; treat the holdoff as over rather than stretch it.
+  if [ $((IFGROUP_NEXT_REPAIR_ALLOWED - _cig_now)) -gt "$IFGROUP_REPAIR_MIN_SECONDS" ]; then
+    IFGROUP_NEXT_REPAIR_ALLOWED=0
+  fi
+  if [ "$_cig_now" -lt "$IFGROUP_NEXT_REPAIR_ALLOWED" ]; then
+    if [ "$IFGROUP_STATUS" != "holdoff" ]; then
+      log_msg "Interface group check: ${IFGROUP_INTERFACE} is missing from interface group ${IFGROUP_NAME} again within ${IFGROUP_REPAIR_MIN_SECONDS}s of the last repair; waiting $((IFGROUP_NEXT_REPAIR_ALLOWED - _cig_now))s before repairing again"
+    fi
+    IFGROUP_STATUS="holdoff"
+    unset _cig_now
+    return 0
+  fi
+
+  if [ "$TEST" -eq 1 ]; then
+    if [ "$IFGROUP_STATUS" != "test" ]; then
+      log_msg "TEST MODE: ${IFGROUP_INTERFACE} is still not in interface group ${IFGROUP_NAME}; would re-add it and run ${FILTER_RELOAD_COMMAND}"
+    fi
+    IFGROUP_STATUS="test"
+    unset _cig_now
+    return 0
+  fi
+
+  IFGROUP_NEXT_REPAIR_ALLOWED=$((_cig_now + IFGROUP_REPAIR_MIN_SECONDS))
+  unset _cig_now
+  # Logged first so that a shutdown arriving during the repair, which exits as
+  # soon as the subshell finishes, still leaves a record that it ran.
+  log_msg "Interface group repair: re-adding ${IFGROUP_INTERFACE} to interface group ${IFGROUP_NAME} and running ${FILTER_RELOAD_COMMAND}"
+
+  # Both steps run in one foreground subshell.  A TERM arriving meanwhile is
+  # held until the subshell finishes, so the daemon cannot exit between the
+  # group add and the reload: a restarted watchdog would find the group
+  # present and never reload the filter.  Output goes to /dev/null rather than
+  # a pipe so that, if the rc wrapper's SIGKILL lands, the orphaned reload is
+  # not killed by SIGPIPE part way through.
+  (
+    ifconfig "$IFGROUP_INTERFACE" group "$IFGROUP_NAME" || exit 1
+    "$FILTER_RELOAD_COMMAND" || exit 2
+    exit 0
+  ) >/dev/null 2>&1
+  _cig_repair_rc=$?
+
+  case "$_cig_repair_rc" in
+    0)
+      log_msg "Interface group repaired: ${IFGROUP_INTERFACE} was missing from interface group ${IFGROUP_NAME}; re-added it and reloaded the filter"
+      IFGROUP_MISSING_CHECKS=0
+      IFGROUP_STATUS="ok"
+      notify_interface_group success
+      ;;
+    2)
+      # The group is back, so the next check passes and nothing retries the
+      # reload; the log line and notification are the only prompt to finish it.
+      log_msg "Interface group repair: re-added ${IFGROUP_INTERFACE} to interface group ${IFGROUP_NAME}, but ${FILTER_RELOAD_COMMAND} failed; run it by hand"
+      IFGROUP_MISSING_CHECKS=0
+      IFGROUP_STATUS="ok"
+      notify_interface_group reload_failed
+      ;;
+    *)
+      # Exit 1 is a refused add.  FreeBSD refuses to add an interface to a
+      # group it is already in, so if pfsense_tailscaled's own hook added the
+      # group since the check above, there is nothing to repair and the hook
+      # reloads the filter itself.  Any other status means the subshell was
+      # killed part way, and the group may be present without a reload, so
+      # that is never read as the hook having won.
+      if [ "$_cig_repair_rc" -eq 1 ] && ifconfig "$IFGROUP_INTERFACE" 2>/dev/null | interface_output_has_group "$IFGROUP_NAME"; then
+        log_msg "Interface group check: ${IFGROUP_INTERFACE} rejoined interface group ${IFGROUP_NAME} before the repair ran; nothing to do"
+        IFGROUP_MISSING_CHECKS=0
+        IFGROUP_NEXT_REPAIR_ALLOWED=0
+        IFGROUP_STATUS="ok"
+        unset _cig_repair_rc
+        return 0
+      fi
+      # Retried every check while the group stays missing, but reported once.
+      if [ "$IFGROUP_STATUS" != "add_failed" ]; then
+        log_msg "Interface group repair FAILED: could not add ${IFGROUP_INTERFACE} to interface group ${IFGROUP_NAME}"
+        notify_interface_group add_failed
+      fi
+      IFGROUP_STATUS="add_failed"
+      # Nothing is known to have reloaded the filter, so the repair is retried
+      # at the next check rather than waiting out the holdoff.
+      IFGROUP_NEXT_REPAIR_ALLOWED=0
+      ;;
+  esac
+  unset _cig_repair_rc
+  return 0
+}
+
 # ---- Signal handling -------------------------------------------------------
 
 # handle_shutdown
@@ -1797,7 +2065,7 @@ main() {
 
   trap handle_shutdown INT TERM
 
-  log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown=(min=${RESTART_COOLDOWN_MIN}s,max=${RESTART_COOLDOWN_MAX}s) restart_services=\"${RESTART_SERVICES}\" restart_settle=${RESTART_SETTLE_SECONDS}s restart_deferral_enabled=${RESTART_DEFERRAL_ENABLED} restart_deferral_interface=${RESTART_DEFERRAL_INTERFACE} test=${TEST} docs=${DOCS_URL}"
+  log_msg "Daemon started: config=${CONFIG_FILE} peers=\"${PEERS}\" interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} ping_count=${PING_COUNT} cooldown=(min=${RESTART_COOLDOWN_MIN}s,max=${RESTART_COOLDOWN_MAX}s) restart_services=\"${RESTART_SERVICES}\" restart_settle=${RESTART_SETTLE_SECONDS}s restart_deferral_enabled=${RESTART_DEFERRAL_ENABLED} restart_deferral_interface=${RESTART_DEFERRAL_INTERFACE} interface_group_repair=${INTERFACE_GROUP_REPAIR_ENABLED} test=${TEST} docs=${DOCS_URL}"
   # Reported here rather than beside the reset above so that -d reaches it:
   # DEBUG is still 0 before option parsing, so log_msg would go to syslog only.
   warn_ignored_state_paths "$_cfg_state_dir" "$_cfg_next_restart_file"
@@ -1806,11 +2074,13 @@ main() {
   notify_startup_if_enabled
 
   if [ "$ONE_SHOT" -eq 1 ]; then
+    check_interface_group
     check_all_peers
     exit 0
   fi
 
   while :; do
+    check_interface_group
     check_all_peers
     watchdog_sleep "$CHECK_INTERVAL"
   done
