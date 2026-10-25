@@ -107,24 +107,29 @@ chmod 755 "${fakebin}/ifconfig" "${fakebin}/reload" "${fakebin}/logger" "${fakeb
 PATH="${fakebin}:/usr/bin:/bin"
 export PATH
 
-PRESENT_FIXTURE='tailscale0: flags=1008051<UP,POINTOPOINT,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 1280
-	options=80000<LINKSTATE>
-	inet 100.64.0.1 --> 100.64.0.1 netmask 0xffffffff
+# Fixtures follow 'ifconfig tailscale0' as captured on pfSense 2.9.0
+# (FreeBSD 16.0-CURRENT), with the addresses replaced by generic ones.
+PRESENT_FIXTURE='tailscale0: flags=1008043<UP,BROADCAST,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 1280
+	options=4080000<LINKSTATE,MEXTPG>
+	inet 100.64.0.1 netmask 0xffffffff broadcast 100.64.0.1
+	inet6 fd7a:115c:a1e0::1 prefixlen 48
 	groups: tun Tailscale
-	nd6 options=101<PERFORMNUD,NO_DAD>
+	nd6 options=901<PERFORMNUD,NO_DAD,STABLEADDR>
 	Opened by PID 1234'
 
-MISSING_FIXTURE='tailscale0: flags=1008051<UP,POINTOPOINT,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 1280
-	options=80000<LINKSTATE>
-	inet 100.64.0.1 --> 100.64.0.1 netmask 0xffffffff
+MISSING_FIXTURE='tailscale0: flags=1008043<UP,BROADCAST,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 1280
+	options=4080000<LINKSTATE,MEXTPG>
+	inet 100.64.0.1 netmask 0xffffffff broadcast 100.64.0.1
+	inet6 fd7a:115c:a1e0::1 prefixlen 48
 	groups: tun
-	nd6 options=101<PERFORMNUD,NO_DAD>
+	nd6 options=901<PERFORMNUD,NO_DAD,STABLEADDR>
 	Opened by PID 1234'
 
-NOGROUPS_FIXTURE='tailscale0: flags=1008051<UP,POINTOPOINT,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 1280
-	options=80000<LINKSTATE>
-	inet 100.64.0.1 --> 100.64.0.1 netmask 0xffffffff
-	nd6 options=101<PERFORMNUD,NO_DAD>
+NOGROUPS_FIXTURE='tailscale0: flags=1008043<UP,BROADCAST,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 1280
+	options=4080000<LINKSTATE,MEXTPG>
+	inet 100.64.0.1 netmask 0xffffffff broadcast 100.64.0.1
+	inet6 fd7a:115c:a1e0::1 prefixlen 48
+	nd6 options=901<PERFORMNUD,NO_DAD,STABLEADDR>
 	Opened by PID 1234'
 
 # set_ifc present|missing|nogroups|absent
