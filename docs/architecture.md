@@ -2,7 +2,7 @@
 
 `tailscale-direct-pfsense` is intentionally small: a foreground daemon, an rc.d wrapper, an installer, an uninstaller, one example config, and shell-native tests.
 
-The project targets pfSense CE 2.7, which is based on FreeBSD 14. That choice drives the design:
+The project targets pfSense CE 2.9.0, which is based on FreeBSD 16.0-CURRENT. That choice drives the design:
 
 - `/bin/sh` keeps the scripts available on the target system.
 - FreeBSD rc.d is the service model, not systemd.
@@ -10,7 +10,7 @@ The project targets pfSense CE 2.7, which is based on FreeBSD 14. That choice dr
 - Runtime state is minimal and lives under `/var/run/tailscale_watchdog`.
 - Healthy/direct operation avoids per-check disk writes.
 
-The base version is worth stating explicitly because the scripts depend on FreeBSD userland behavior that has no Linux equivalent and can differ across FreeBSD releases: `stat -f '%Su'` and `'%Lp'` for the config permission gate, `jot` for the randomized cooldown, and `netstat -ibn` for interface byte counters. CI pins its FreeBSD VM to 14.0 for that reason; when the supported pfSense base moves, that pin and this page should move with it.
+The base version is worth stating explicitly because the scripts depend on FreeBSD userland behavior that has no Linux equivalent and can differ across FreeBSD releases: `stat -f '%Su'` and `'%Lp'` for the config permission gate, `jot` for the randomized cooldown, and `netstat -ibn` for interface byte counters. CI pins its FreeBSD VM for that reason, to 15.1: the CI action has no FreeBSD 16 image, because 16.0 exists only as a CURRENT snapshot, so 15.1 is the newest release it can boot and the closest to the target. Releases are also checked by running the suite on a pfSense 2.9.0 router. When the supported pfSense base moves, or the action gains a 16 image, that pin and this page should move with it.
 
 ## Installed Components
 

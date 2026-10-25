@@ -72,13 +72,15 @@ jobs:
       # GitHub provides no native FreeBSD runner; this is the established way
       # to test BSD behavior on Actions.
       #
-      # release is pinned to 14.0 to match the FreeBSD base of pfSense CE 2.7,
-      # the supported target (see README "Requirements" and
-      # docs/architecture.md).  Fidelity to the target matters more here than
-      # currency: the whole reason this job exists is that stat -f, jot, and
-      # netstat -ibn behavior is what can drift between FreeBSD releases, so
-      # testing against a newer 14.x than the router actually runs would
-      # weaken the signal.  Bump this when the supported pfSense base moves.
+      # The supported target is pfSense CE 2.9.0, whose base is FreeBSD
+      # 16.0-CURRENT (see README "Requirements" and docs/architecture.md).
+      # This action has no 16.0 image: 16.0 is a CURRENT snapshot, not a
+      # release, and the action keeps it shelved.  So release is pinned to
+      # 15.1, the newest release it boots and the closest to the router's
+      # base.  The whole reason this job exists is that stat -f, jot, and
+      # netstat -ibn behavior can drift between FreeBSD releases, so move this
+      # to 16.x as soon as the action ships an image, and whenever the
+      # supported pfSense base moves.
       #
       # Keep the release fully qualified.  The action reads a partial value
       # such as "14" as a prefix and boots the newest release matching it,
@@ -92,7 +94,7 @@ jobs:
       - name: Run suite in a FreeBSD VM
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
         with:
-          release: "14.0"
+          release: "15.1"
           run: |
             set -e
             make smoke
