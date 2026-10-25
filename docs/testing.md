@@ -56,6 +56,7 @@ Current tests cover:
 - notification handling with fake `curl`, including rejecting a request that mixes curl's multipart and URL-encoded request methods and rejecting a config-stream value that is silently truncated at a newline;
 - per-peer state transitions;
 - restoring the shell's noglob setting after the peer loop, including when nested functions run their own loops;
+- a full one-shot test-mode run (`-t -1`) against a fake `tailscale`, which must exit cleanly with nothing on stderr and globbing restored;
 - pfSense boot hook dispatch and repeat-start no-op behavior with fake commands;
 - installer, uninstaller, rc wrapper, and docs static safety checks.
 
