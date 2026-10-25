@@ -464,6 +464,8 @@ Common causes include:
 - Tailscale is not authenticated or running
 - the expected service names are not available on the system; adjust `RESTART_SERVICES` to match the local pfSense service names
 
+Run `service tailscale_watchdog` commands as root, for example with `sudo`. Run as another user, they stop with a message saying root is required.
+
 ### The service does not start after a reboot
 
 Check that the boot hook exists and is executable:

@@ -134,6 +134,21 @@ kill_and_wait() {
   return 0
 }
 
+# require_root ACTION
+#
+# Refuses ACTION unless running as root.  start, stop, and status all need it:
+# the daemon runs as root, its pidfile lives in /var/run, and kill -0 against a
+# root process fails for any other user.  Without this check a non-root status
+# reported a running daemon as "not running, but pidfile exists", and a
+# non-root stop announced it was removing a stale pidfile it could not touch
+# and returned success.
+require_root() {
+  if [ "$(id -u)" != "0" ]; then
+    echo "${name} $1 must be run as root (for example: sudo service ${name} $1)" >&2
+    return 1
+  fi
+}
+
 # tailscale_watchdog_start
 #
 # rc.d start hook.  Refuses to launch a second daemon when a valid pidfile
@@ -141,6 +156,8 @@ kill_and_wait() {
 # foreground daemon in the background, writes the new pidfile, and reports
 # early startup failures captured from daemon stderr/stdout.
 tailscale_watchdog_start() {
+  require_root start || return 1
+
   if [ -f "$pidfile" ]; then
     pid="$(cat "$pidfile" 2>/dev/null)"
     if valid_pid "$pid" && kill -0 "$pid" 2>/dev/null; then
@@ -227,6 +244,8 @@ tailscale_watchdog_start() {
 # stale pidfiles as already stopped, sends TERM first, and escalates to KILL
 # only after a bounded wait.
 tailscale_watchdog_stop() {
+  require_root stop || return 1
+
   if [ ! -f "$pidfile" ]; then
     echo "${name} is not running"
     return 0
@@ -303,6 +322,8 @@ tailscale_watchdog_restart() {
 # valid PID and that process still exists; corrupt or stale pidfiles are
 # surfaced as failures.
 tailscale_watchdog_status() {
+  require_root status || return 1
+
   if [ ! -f "$pidfile" ]; then
     echo "${name} is not running"
     return 1
