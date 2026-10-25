@@ -23,10 +23,10 @@ It does not modify your Tailscale account, ACLs, routes, firewall rules, or Tail
 
 ## Requirements
 
-- pfSense CE 2.7, which is based on FreeBSD 14. This is the platform the
-  project targets and tests against. Other pfSense versions may work, but the
+- pfSense CE 2.9.0, which is based on FreeBSD 16. This is the platform the
+  project targets and is tested on. Other pfSense versions may work, but the
   scripts rely on FreeBSD userland behavior such as `stat -f`, `jot`, and
-  `netstat -ibn`, which can differ on an older base.
+  `netstat -ibn`, which can differ on another base.
 - Tailscale installed and authenticated
 - root access to the pfSense shell
 - `curl` available on the system
@@ -39,7 +39,7 @@ Review-first installation is recommended because the installer runs as root.
 The quickest installation method is:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v1.3.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
   | VERSION="${VERSION}" /bin/sh
@@ -48,7 +48,7 @@ curl -fsSL \
 For a review-first installation:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v1.3.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
   -o /tmp/install.sh
@@ -329,7 +329,7 @@ Before updating, read the [release notes](https://github.com/toddawhittaker/tail
 Re-run the installer:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v1.3.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/install.sh" \
   | VERSION="${VERSION}" /bin/sh
@@ -374,7 +374,7 @@ RESTART_SETTLE_SECONDS=3
 To uninstall quickly:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v1.3.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/uninstall.sh" \
   | /bin/sh
@@ -383,7 +383,7 @@ curl -fsSL \
 For a review-first uninstall:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v1.3.0
 curl -fsSL \
   "https://raw.githubusercontent.com/toddawhittaker/tailscale-direct-pfsense/${VERSION}/uninstall.sh" \
   -o /tmp/uninstall.sh
