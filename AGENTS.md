@@ -83,7 +83,7 @@ Installed path: `/usr/local/etc/rc.d/tailscale_watchdog`.
 
 Preserve headers: `# PROVIDE: tailscale_watchdog`, `# REQUIRE: NETWORKING tailscaled pfsense_tailscaled`, `# KEYWORD: shutdown`.
 
-The wrapper must run the daemon in the background, maintain and validate a PID file, avoid stale PID hazards, stop with TERM before escalation, avoid passing debug mode through normal service flags, and fail visibly if startup fails.
+The wrapper must run the daemon in the background, maintain and validate a PID file, avoid stale PID hazards, stop with TERM before escalation, avoid passing debug mode through normal service flags, fail visibly if startup fails, and refuse `start`, `stop`, and `status` unless run as root. A non-root `kill -0` on the root-owned daemon fails, which once made `status` report a running watchdog as stopped.
 
 Boot hook: `/usr/local/etc/rc.d/tailscale_watchdog.sh` (repo file `tailscale_watchdog.sh`, `root:wheel` 0755). pfSense runs only `rc.d/*.sh` at boot (`rc.start_packages` with `start`, `rc.stop_packages` with `stop`). The hook stays a thin pass-through to `/usr/sbin/service tailscale_watchdog`: no logic, and no rcvar bypass such as `onestart`, so `tailscale_watchdog_enable="YES"` is still required. pfSense re-runs `rc.start_packages` after boot, so the wrapper's `start` must stay a no-op when its pidfile points at a live process.
 

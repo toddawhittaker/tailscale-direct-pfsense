@@ -55,7 +55,8 @@ It owns:
 - writing and validating the pidfile;
 - capturing startup output long enough to report early failures;
 - stopping with TERM before escalating to KILL;
-- removing stale or invalid pidfiles safely.
+- removing stale or invalid pidfiles safely;
+- refusing `start`, `stop`, and `status` when not run as root. A non-root user cannot signal the root-owned daemon, so `kill -0` fails and a running watchdog used to be reported as not running.
 
 The wrapper intentionally does not pass debug mode through default service flags. Debug output is for direct foreground test runs.
 

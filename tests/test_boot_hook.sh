@@ -149,7 +149,22 @@ exec sleep 60
 EOF
 chmod 755 "${rc_dir}/fake_daemon"
 
+# The wrapper refuses to run unless id -u reports 0.  This fake reports
+# FAKE_UID (default 0), so the suite behaves the same as root or not.
+mkdir "${rc_dir}/bin" || exit 1
+cat > "${rc_dir}/bin/id" <<'EOF'
+#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = "-u" ]; then
+  printf '%s\n' "${FAKE_UID:-0}"
+  exit 0
+fi
+echo "fake id: unsupported arguments: $*" >&2
+exit 1
+EOF
+chmod 755 "${rc_dir}/bin/id"
+
 run_rc() {
+  PATH="${rc_dir}/bin:${PATH}" \
   tailscale_watchdog_pidfile="$pidfile" \
   tailscale_watchdog_command="${rc_dir}/fake_daemon" \
   tailscale_watchdog_flags="" \
@@ -183,6 +198,29 @@ assert_contains "repeat start reports the running pid" \
 assert_not_contains "repeat start does not report starting" "$out2" "Starting tailscale_watchdog."
 assert_eq "repeat start does not launch a second daemon" "1" "$(count_lines "$launch_log")"
 assert_eq "repeat start leaves the pidfile unchanged" "$pid1" "$(cat "$pidfile" 2>/dev/null)"
+
+# A non-root user is refused rather than told a running daemon is stopped.
+# restart is refused by its stop step, so its message names stop.
+for cmd in status stop start restart; do
+  action="$cmd"
+  [ "$cmd" = restart ] && action=stop
+  # Exported explicitly: FreeBSD sh does not export an assignment placed
+  # before a function call to the commands that function runs.
+  out_nr="$(FAKE_UID=1000; export FAKE_UID; run_rc "$cmd")"
+  rc=$?
+  assert_eq "non-root ${cmd} exits 1" "1" "$rc"
+  assert_eq "non-root ${cmd} prints only the root requirement" \
+    "tailscale_watchdog ${action} must be run as root (for example: sudo service tailscale_watchdog ${action})" \
+    "$out_nr"
+done
+if [ "$pid1_numeric" = yes ] && kill -0 "$pid1" 2>/dev/null; then
+  alive=yes
+else
+  alive=no
+fi
+assert_eq "daemon still running after non-root commands" "yes" "$alive"
+assert_eq "non-root commands leave the pidfile unchanged" "$pid1" "$(cat "$pidfile" 2>/dev/null)"
+assert_eq "non-root commands launch no daemon" "1" "$(count_lines "$launch_log")"
 
 out3="$(run_rc stop)"
 rc=$?
