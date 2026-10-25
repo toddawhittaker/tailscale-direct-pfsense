@@ -163,7 +163,7 @@ Use `docs/` for maintainer-focused rationale. Before changing daemon behavior, s
 
 New notification providers must preserve Pushover compatibility, avoid logging or argv exposure of secrets, use fake commands in tests, and update README, config example, and maintainer docs.
 
-For releases: use SemVer-style tags such as `v1.0.0`, prefer annotated tags, require clean `git status`, run all `sh -n` checks, and write user-facing release notes. Extra release assets are not required unless requested.
+For releases: use SemVer-style tags such as `v1.0.0`, prefer annotated tags, require clean `git status`, run all `sh -n` checks, and write user-facing release notes. The GitHub release notes are the changelog: the README links to them, and there is deliberately no `CHANGELOG.md` to keep in step with them. Extra release assets are not required unless requested.
 
 ## Interaction
 

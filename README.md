@@ -310,6 +310,8 @@ Then test, enable, and start the service as described above.
 
 ## Updating
 
+Before updating, read the [release notes](https://github.com/toddawhittaker/tailscale-direct-pfsense/releases) for each version between the one you run and the one you are installing. They list what changed and say when a config or service change is needed.
+
 Re-run the installer:
 
 ```sh
