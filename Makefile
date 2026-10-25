@@ -12,6 +12,7 @@ TESTS = \
 	tests/test_notify.sh \
 	tests/test_peer_state.sh \
 	tests/test_noglob_restore.sh \
+	tests/test_oneshot_run.sh \
 	tests/test_installer_static.sh \
 	tests/test_boot_hook.sh \
 	tests/test_rc_static.sh \
