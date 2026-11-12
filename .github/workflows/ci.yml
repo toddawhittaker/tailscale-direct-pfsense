@@ -92,7 +92,7 @@ jobs:
       # ignores it, so passing it is dropped rather than left reading like it
       # still decides something.
       - name: Run suite in a FreeBSD VM
-        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1
         with:
           release: "15.1"
           run: |
