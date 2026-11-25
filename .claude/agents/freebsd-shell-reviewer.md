@@ -37,7 +37,7 @@ The repo already uses the correct BSD forms; match them.
 
 | Wrong (GNU) | Right (BSD/pfSense) | Used in repo at |
 |---|---|---|
-| `stat -c '%a'` / `%U` | `stat -f '%Lp'` / `stat -f '%Su'` | `tailscale_watchdogd:216`, `install.sh:346` |
+| `stat -c '%a'` / `%U` | `stat -f '%Lp'` / `stat -f '%Su'` | `config_is_safe_to_source` in `tailscale_watchdogd`, `install_file` in `install.sh` |
 | `sed -i` | `sed -i '' -e` — or better, the repo's temp-file + `mv` pattern | `uninstall.sh` rc.conf editing |
 | `grep -P` | basic/extended regex, or `awk` | — |
 | `date -d` | `date -v` / `date -j -f`; `date +%s` is fine | `tailscale_watchdogd` |
