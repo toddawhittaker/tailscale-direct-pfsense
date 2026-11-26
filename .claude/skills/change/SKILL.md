@@ -90,11 +90,8 @@ git diff
 
 Never commit: a live `tailscale_watchdog.conf`, logs, temp files, `.codex-log`, or anything containing a token, real peer name, or private hostname. Verify explicitly — `git diff --cached` before the commit, not after.
 
-Keep commits focused; one logical change. End the message with:
-
-```
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-```
+Keep commits focused; one logical change. The message credits no AI
+assistant: no co-author line and no "generated with" line.
 
 ## 7. Open the PR, then stop
 

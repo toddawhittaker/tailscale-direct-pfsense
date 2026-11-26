@@ -20,18 +20,9 @@ Read the relevant source of truth before judging — `AGENTS.md` for the rules, 
 
 ## Daemon invariants
 
-From `AGENTS.md` and `docs/daemon-behavior.md`. Each of these is load-bearing:
+Review against every bullet under "Daemon Invariants" in `AGENTS.md` and against `docs/daemon-behavior.md`, in particular its "Peer Classification", "Restart Controls" and "How Services Are Restarted" sections. Each of those rules is load-bearing. Two more that those documents do not state:
 
-- **`direct` is healthy.** At least one usable `pong ... via ...` that is neither DERP nor peer-relay.
-- **`unknown` breaks the relay sequence.** It is not a failure. Timeouts, offline peers, parse changes, and transient command errors are not enough evidence to restart router services. A change that makes `unknown` count toward the threshold is a serious finding.
-- **Restart only after `FAIL_THRESHOLD` consecutive relayed classifications** for a single peer.
-- **Restart controls are global, never per peer** — cooldown and deferral both. A restart interrupts all Tailscale traffic on the router, not just the triggering peer's path. Per-peer cooldown or per-peer deferral is a design violation.
-- **Cooldown is written immediately before a real restart attempt**, to `/var/run/tailscale_watchdog/next_restart_allowed`. A failed restart therefore still consumes cooldown — that is deliberate, it prevents immediate retry loops.
-- **A deferred restart must not write cooldown state.** Deferral is bounded by `RESTART_DEFERRAL_MAX_ATTEMPTS`.
-- **When activity detection is unavailable, malformed, or interrupted, proceed with the restart decision** and log it. A broken deferral check must never suppress restarts indefinitely.
-- **Successful restart resets all peer relay counters. Failed restart leaves them intact** so retry can happen after cooldown.
-- **Healthy/direct checks create and update no state files.** No per-check disk writes; quiet logs during healthy operation are intentional. A change that writes state on every loop is a finding.
-- **Signal handling stops the loop promptly, including the active sleep** (`SLEEP_PID` / `handle_shutdown`).
+- A change that makes `unknown` count toward the threshold is a serious finding.
 - **Peer names are validated hostname-safe and checked for post-sanitization collisions** before becoming state-variable names or reaching `tailscale ping`.
 
 ## Secrets
